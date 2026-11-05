@@ -189,6 +189,38 @@ def steering_note(hit: dict, tool_name: str = "") -> str:
     )
 
 
+TOOL_MARKUP = re.compile(r"<tool_call>\s*<function=([A-Za-z0-9_]+)>\s*(.*?)</function>\s*</tool_call>", re.S)
+
+
+def text_tool_markup(text: str) -> list[dict]:
+    """Find tool markup that was emitted as message content instead of a structured call.
+
+    This is the failure the loop guard could not see before. When a model writes
+    <tool_call><function=name>...</function></tool_call> as prose, nothing in the backend
+    parses it, so no tool runs and the turn simply ends because the content was complete.
+    Detection has to look at message text, not output items. It also reports names that are
+    not in the available tool set, which is the second half of the same failure.
+    """
+    found = []
+    for m in TOOL_MARKUP.finditer(str(text or "")):
+        found.append({"name": m.group(1), "body": m.group(2).strip()})
+    return found
+
+
+
+def text_tool_markup_issues(text: str, available: set[str] | None = None) -> dict:
+    """Report tool markup written as prose, and names that do not exist.
+
+    Both halves of the observed failure. The markup was message content, so nothing
+    executed and the turn closed because the content was complete. The name, run_file,
+    was not a tool in this instance. A guard that only checks repetition cannot see
+    either one.
+    """
+    hits = text_tool_markup(text)
+    unknown = sorted({h["name"] for h in hits if available is not None and h["name"] not in available})
+    unclosed = str(text or "").count("<tool_call>") > str(text or "").count("</tool_call>")
+    return {"markup": hits, "unknown": unknown, "unclosed": unclosed}
+
 def pairing_safe_insert_index(messages: list[dict]) -> int:
     """Where a note can be inserted without breaking tool call/output pairing.
 
