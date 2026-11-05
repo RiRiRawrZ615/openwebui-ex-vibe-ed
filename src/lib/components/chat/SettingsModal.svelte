@@ -26,6 +26,7 @@
 	import Usage from './Settings/Usage.svelte';
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
+	import OpenWebVibes from './Settings/OpenWebVibes.svelte';
 	import Search from '../icons/Search.svelte';
 	import Connections from './Settings/Connections.svelte';
 	import Integrations from './Settings/Integrations.svelte';
@@ -37,6 +38,7 @@
 	import InfoCircle from '../icons/InfoCircle.svelte';
 	import WrenchAlt from '../icons/WrenchAlt.svelte';
 	import Face from '../icons/Face.svelte';
+	import Sparkles from '../icons/Sparkles.svelte';
 	import AppNotification from '../icons/AppNotification.svelte';
 	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
 	import ArchiveBox from '../icons/ArchiveBox.svelte';
@@ -150,6 +152,7 @@
 		connections: $i18n.t('Services'),
 		tools: $i18n.t('Services'),
 		personalization: $i18n.t('Preferences'),
+		vibes: $i18n.t('Fork'),
 		audio: $i18n.t('Preferences'),
 		data_controls: $i18n.t('Data'),
 		usage: $i18n.t('Data'),
@@ -230,6 +233,12 @@
 			titleKey: 'settings.personal.personalization.title',
 			title: $i18n.t('settings.personal.personalization.title'),
 			searchPrefixes: ['settings.personal.personalization.']
+		},
+		{
+			id: 'vibes',
+			titleKey: 'settings.personal.vibes.title',
+			title: $i18n.t('settings.personal.vibes.title'),
+			searchPrefixes: ['settings.personal.vibes.']
 		},
 		{
 			id: 'audio',
@@ -718,6 +727,19 @@
 								<Face className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.personalization.title')}</span>
 							</button>
+						{:else if tabId === 'vibes'}
+							<button
+								role="tab"
+								aria-controls="tab-vibes"
+								aria-selected={selectedTab === 'vibes'}
+								class={tabButtonClass(selectedTab === 'vibes')}
+								on:click={() => {
+									selectTab('vibes');
+								}}
+							>
+								<Sparkles className="size-3.5" strokeWidth="2" />
+								<span>{$i18n.t('settings.personal.vibes.title')}</span>
+							</button>
 						{:else if tabId === 'audio'}
 							<button
 								role="tab"
@@ -885,6 +907,13 @@
 				/>
 			{:else if selectedTab === 'personalization'}
 				<Personalization
+					{saveSettings}
+					on:save={() => {
+						toast.success($i18n.t('Settings saved successfully!'));
+					}}
+				/>
+			{:else if selectedTab === 'vibes'}
+				<OpenWebVibes
 					{saveSettings}
 					on:save={() => {
 						toast.success($i18n.t('Settings saved successfully!'));

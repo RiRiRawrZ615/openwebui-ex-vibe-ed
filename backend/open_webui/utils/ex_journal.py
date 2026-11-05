@@ -104,6 +104,7 @@ def partition(
     tool_output_window: int = DEFAULT_TOOL_OUTPUT_WINDOW,
     tool_output_max_chars: int = DEFAULT_TOOL_OUTPUT_MAX_CHARS,
     base_entry_id: int = 0,
+    journal_lookup: dict[str, list[dict]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Split messages into what the model should see and what belongs in the journal.
 
@@ -164,6 +165,40 @@ def partition(
                     if reasoning_in_window:
                         new_output.append(item)
                         continue
+                    if journal_lookup:
+                        already = [e for e in journal_lookup.get(message.get("id"), []) if e["kind"] == "reasoning"]
+                        if already:
+                            # Idempotency. partition runs every turn, so a turn already in the
+                            # journal must not append again. The model-facing copy still gets
+                            # the pointer, not the full text, otherwise the window silently
+                            # stops applying to older turns.
+                            new_output.append(
+                                {
+                                    "type": "message",
+                                    "content": [{"type": "output_text", "text": _pointer(already[0]["id"], "reasoning", turn_number, summarise(text), len(text))}],
+                                }
+                            )
+                        else:
+                            next_entry_id += 1
+                            entries.append(
+                                {
+                                    "id": next_entry_id,
+                                    "chat_id": chat_id,
+                                    "turn": turn_number,
+                                    "message_id": message.get("id"),
+                                    "kind": "reasoning",
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "summary": summarise(text),
+                                    "text": text,
+                                }
+                            )
+                            new_output.append(
+                                {
+                                    "type": "message",
+                                    "content": [{"type": "output_text", "text": _pointer(next_entry_id, "reasoning", turn_number, summarise(text), len(text))}],
+                                }
+                            )
+                        continue
                     next_entry_id += 1
                     entries.append(
                         {
@@ -193,6 +228,20 @@ def partition(
                 # preserved because call_id is untouched.
                 inside_tool_window = first_kept_tool is not None and (i, pos) >= first_kept_tool
                 if len(text) > tool_output_max_chars and not inside_tool_window:
+                    if journal_lookup:
+                        already = [
+                            e
+                            for e in journal_lookup.get(message.get("id"), [])
+                            if e["kind"] == "tool_output" and e.get("call_id") == item.get("call_id")
+                        ]
+                        if already:
+                            new_output.append(
+                                {
+                                    "type": "message",
+                                    "content": [{"type": "output_text", "text": _pointer(already[0]["id"], "tool_output", turn_number, summarise(text), len(text))}],
+                                }
+                            )
+                            continue
                     next_entry_id += 1
                     entries.append(
                         {
@@ -228,6 +277,8 @@ def render_markdown(entries: list[dict], chat_id: str, title: str = "") -> str:
     for e in entries:
         lines.append(f"## entry {e['id']} | turn {e['turn']} | {e['kind']}")
         lines.append(f"ts: {e['ts']}")
+        if e.get("message_id"):
+            lines.append(f"message_id: {e['message_id']}")
         if e.get("call_id"):
             lines.append(f"call_id: {e['call_id']}")
         lines.append(f"summary: {e['summary']}")
@@ -252,6 +303,7 @@ def append_journal(path: Path | str, entries: list[dict], chat_id: str, title: s
     body = "\n".join(
         f"## entry {e['id']} | turn {e['turn']} | {e['kind']}\n"
         f"ts: {e['ts']}"
+        + (f"\nmessage_id: {e['message_id']}" if e.get("message_id") else "")
         + (f"\ncall_id: {e['call_id']}" if e.get("call_id") else "")
         + f"\nsummary: {e['summary']}\n\n{e['text'].strip()}\n"
         for e in entries
@@ -275,8 +327,6 @@ def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str =
         # journal that holds nothing must not look like a successful read.
         return f"[journal has no entries yet: {p}]"
 
-    sections = [s for s in re.split(r"\n(?=## entry )", raw) if s.strip()]
-
     if entry_id is not None:
         for s in sections:
             if s.startswith(f"## entry {entry_id} "):
@@ -290,6 +340,27 @@ def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str =
     if not hits:
         return f"[no journal match for {needle!r} in {len(sections)} entries]"
     return "\n\n".join(hits[:limit])
+
+
+def entry_ids_by_message(path: Path | str) -> dict[str, list[dict]]:
+    """message_id -> entries already in the journal. Makes partition idempotent across
+    turns, and lets the model-facing copy show the pointer for a turn already journalled."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    out: dict[str, list[dict]] = {}
+    for section in re.split(r"\n(?=## entry )", raw):
+        if not section.strip().startswith("## entry "):
+            continue
+        head = re.match(r"^## entry (\d+) \| turn (\d+) \| (\w+)$", section.strip())
+        msg = re.search(r"^message_id: (\S+)$", section, re.M)
+        call = re.search(r"^call_id: (\S+)$", section, re.M)
+        if head and msg:
+            out.setdefault(msg.group(1), []).append(
+                {"id": int(head.group(1)), "kind": head.group(3), "call_id": call.group(1) if call else None}
+            )
+    return out
 
 
 def journal_index(path: Path | str, limit: int = 25) -> list[dict]:

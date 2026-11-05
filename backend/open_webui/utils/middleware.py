@@ -33,6 +33,7 @@ from open_webui.config import (
 from open_webui.constants import TASKS
 from open_webui.env import (
     BYPASS_MODEL_ACCESS_CONTROL,
+    DATA_DIR,
     CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS,
     CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE,
     ENABLE_API_OUTLET_FILTERS,
@@ -90,6 +91,9 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
+from open_webui.utils.ex_export import verbatim_digest
+from open_webui.utils.ex_settings import resolve_ex_settings
+from open_webui.utils.ex_wiring import journal_window, loop_check
 from open_webui.utils.files import (
     convert_markdown_base64_images,
     get_file_url_from_base64,
@@ -2233,6 +2237,22 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             message['output'] = strip_reasoning_details(output)
         if message.get('role') == 'assistant' and isinstance(output, list):
             message['output'] = strip_tool_images(message['output'], model)
+
+    # EX journal window. Runs on the stored-message form, before the history rebuild.
+    # Input messages are not mutated: partition returns model-facing copies, so the DB
+    # row keeps everything the UI needs to render the reasoning block.
+    ex_settings = resolve_ex_settings(user, form_data)
+    ex_journal_new = 0
+    if ex_settings['enabled'] and ex_settings['journalWindow'] and metadata.get('chat_id'):
+        try:
+            form_data['messages'], ex_journal_new = journal_window(
+                form_data.get('messages', []),
+                data_dir=DATA_DIR,
+                chat_id=metadata.get('chat_id'),
+                settings=ex_settings,
+            )
+        except Exception:
+            log.exception('EX journal window failed; continuing with full history')
 
     form_data['messages'] = process_messages_with_output(
         form_data.get('messages', []),
@@ -5605,6 +5625,10 @@ async def streaming_chat_response_handler(response, ctx):
                     if response.background:
                         await response.background()
 
+                # ex_settings is resolved in process_chat_payload; re-resolve here so the
+                # guard sees the same values (form_data settings can override user settings).
+                ex_settings = resolve_ex_settings(user, form_data)
+
                 tool_call_iterations = 0
                 max_tool_call_iterations = getattr(
                     request.state,
@@ -5668,6 +5692,43 @@ async def streaming_chat_response_handler(response, ctx):
                     max_tool_call_iterations is None or tool_call_iterations < max_tool_call_iterations
                 ):
                     tool_call_iterations += 1
+
+                    # EX loop guard. Detection at the iteration boundary, not after the loop
+                    # already happened. Mid-reasoning injection is impossible, so the honest
+                    # form is: detect here, then insert a deterministic note before the next
+                    # request, at an index that keeps tool call/output pairing intact.
+                    ex_guard_hit = None
+                    if ex_settings.get('loopGuard'):
+                        try:
+                            guard = loop_check(
+                                prior_output + output,
+                                messages,
+                                ex_settings,
+                                available_tools=set(metadata.get('tools', {}) or {}),
+                            )
+                            if guard['hit'].get('verdict') != 'clean' and guard['note']:
+                                ex_guard_hit = guard
+                                insert_at = guard['insert_at']
+                                note_msg = {
+                                    'role': 'user',
+                                    'content': guard['note'],
+                                    'exLoopGuard': True,
+                                }
+                                messages.insert(insert_at, note_msg)
+                                log.warning('EX loop guard: %s', guard['hit'].get('reason'))
+                                if event_emitter:
+                                    await event_emitter(
+                                        {
+                                            'type': 'status',
+                                            'data': {
+                                                'action': 'ex_loop_guard',
+                                                'description': guard['hit'].get('reason'),
+                                                'done': True,
+                                            },
+                                        }
+                                    )
+                        except Exception:
+                            log.exception('EX loop guard check failed; continuing without steering')
 
                     # Resolve dispatch before approvals and special handling such as ask_user.
                     response_tool_calls = []

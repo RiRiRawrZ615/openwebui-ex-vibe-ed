@@ -65,6 +65,9 @@
 	import ContentRenderer from './ContentRenderer.svelte';
 	import ContextCompactionLabel from './ContextCompactionLabel.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
+	import { estimateMessagesTokens } from '$lib/utils/contextUsage';
+	import { resolveExSettings } from '$lib/utils/exSettings';
+	import { formatStatsLine, generationStats, liveStats } from '$lib/utils/exStats';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
 	import { fade } from 'svelte/transition';
@@ -127,6 +130,9 @@
 			load_duration?: number;
 			usage?: unknown;
 		};
+		// Declared so the EX stats row can read it without an implicit any. The
+		// template already reads message.usage; the interface just never said so.
+		usage?: Record<string, unknown>;
 		annotation?: { type: string; rating: number };
 	}
 
@@ -208,6 +214,33 @@
 	$: visibleResponseContent =
 		getOutputText(message.output) || removeAllDetails(message.content ?? '');
 	$: hasResponseContent = Boolean((message.content ?? '').trim() || message.output?.length);
+
+	// EX live stats. Content changes drive this, so tok/s reflects the actual arrival
+	// rate during generation rather than a guess. Providers usually report usage only in
+	// the final chunk, so everything shown before that is labelled as an estimate and is
+	// never merged into message.usage.
+	// Reactive so a settings change in the EX tab applies without a reload.
+	$: exSettings = resolveExSettings($settings);
+	let liveStartMs: number | null = null;
+	let liveElapsedSec = 0;
+
+	$: if (message && message.role === 'assistant' && !message.done && exSettings.liveStats) {
+		if (liveStartMs === null) liveStartMs = message.timestamp ?? Date.now();
+		liveElapsedSec = Math.max(0, (Date.now() - liveStartMs) / 1000);
+	}
+	$: if (message?.done) {
+		liveStartMs = null;
+		liveElapsedSec = 0;
+	}
+
+	// Message-list estimate only. System prompt and tool schemas are not counted here,
+	// so the row labels the window as message-only.
+	$: exWindowTokens = message ? estimateMessagesTokens(createMessagesList(history, message.id)) : 0;
+	$: exLive =
+		exSettings.liveStats && message?.role === 'assistant' && !message.done
+			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens)
+			: null;
+	$: exStats = message?.usage ? generationStats(message.usage) : null;
 
 	let edit = false;
 	let editedContent = '';
@@ -729,6 +762,12 @@
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
 
+						{#if exLive && hasResponseContent}
+							<div class="mb-1 text-xs text-gray-500 dark:text-gray-400 font-mono" title="Estimated during generation">
+								{exLive.line}
+							</div>
+						{/if}
+
 						{#if message?.files && message.files?.filter( (f) => ['image', 'file'].includes(f.type) ).length > 0}
 							<div
 								class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
@@ -1212,7 +1251,7 @@
 									</Tooltip>
 								{/if}
 
-								{#if Object.keys(message.usage ?? {}).some((key) => key !== 'incomplete') && $visibleControls['chat.usage']}
+								{#if Object.keys(message.usage ?? {}).some((key) => key !== 'incomplete') && $visibleControls['chat.usage'] && exSettings.showInfoIcon}
 									{@const usage = JSON.stringify(message.usage, null, 2)
 										.replace(/"([^(")"]+)":/g, '$1:')
 										.slice(1, -1)
@@ -1220,9 +1259,10 @@
 										.map((line) => line.slice(2))
 										.map((line) => (line.endsWith(',') ? line.slice(0, -1) : line))
 										.join('\n')}
-									<span id="usage-{message.id}" hidden>{usage}</span>
+									{@const exInfo = (exStats ? `${formatStatsLine(exStats)}\n\n` : '') + usage}
+									<span id="usage-{message.id}" hidden>{exInfo}</span>
 									<Tooltip
-										content={`<pre>${sanitizeResponseContent(usage)}</pre>`}
+										content={`<pre>${sanitizeResponseContent(exInfo)}</pre>`}
 										allowHTML={true}
 										placement="bottom"
 									>

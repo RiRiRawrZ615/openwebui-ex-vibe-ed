@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.utils.chat_id import is_saved_chat_id
+from open_webui.utils.ex_wiring import digest, resolve_ex_settings
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_content_from_message, get_last_user_message, get_message_list
 from open_webui.utils.payload import apply_params_to_form_data
@@ -91,19 +92,24 @@ async def compact_messages_for_request(
             }
         )
 
+    digest_used = False
     try:
-        summary = await _generate_summary(
-            request,
-            form_data,
-            user,
-            model_id,
-            models,
-            compacted_messages,
-            recent_messages,
-            previous_summary,
-            config['prompt_template'],
-            bypass_system_prompt,
-        )
+        summary = digest(resolve_ex_settings(user, form_data), compacted_messages)
+        if summary is None:
+            summary = await _generate_summary(
+                request,
+                form_data,
+                user,
+                model_id,
+                models,
+                compacted_messages,
+                recent_messages,
+                previous_summary,
+                config['prompt_template'],
+                bypass_system_prompt,
+            )
+        else:
+            digest_used = True
     except Exception:
         if event_emitter:
             await event_emitter(
@@ -133,13 +139,14 @@ async def compact_messages_for_request(
         )
 
     log.info(
-        'Compacted chat context for chat=%s checkpoint=%s response=%s dropped=%d kept=%d summary_chars=%d',
+        'Compacted chat context for chat=%s checkpoint=%s response=%s dropped=%d kept=%d summary_chars=%d source=%s',
         chat_id,
         checkpoint_message_id,
         metadata.get('message_id'),
         len(compacted_messages),
         len(recent_messages),
         len(summary),
+        'verbatim' if digest_used else 'paraphrase',
     )
 
     if event_emitter:
@@ -154,6 +161,7 @@ async def compact_messages_for_request(
                         recent_messages[0].get('id') if recent_messages[0].get('role') == 'user' else None
                     ),
                     'context_summary': summary,
+                    'summary_source': 'verbatim' if digest_used else 'paraphrase',
                 },
             }
         )

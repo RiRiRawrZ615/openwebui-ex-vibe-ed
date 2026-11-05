@@ -160,6 +160,7 @@ from open_webui.routers import (
     comments,
     configs,
     evaluations,
+    ex,
     files,
     folders,
     functions,
@@ -853,6 +854,7 @@ app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
 app.include_router(functions.router, prefix='/api/v1/functions', tags=['functions'])
 app.include_router(evaluations.router, prefix='/api/v1/evaluations', tags=['evaluations'])
+app.include_router(ex.router, prefix='/api/v1/ex', tags=['ex'])
 if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
