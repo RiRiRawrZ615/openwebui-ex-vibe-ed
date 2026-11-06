@@ -133,6 +133,43 @@
 		{/if}
 	{:else if displayItem.type === 'image'}
 		<Image src={displayItem.src} alt={$i18n.t('Generated Image')} />
+	{:else if displayItem.type === 'reasoning'}
+		<!-- Thinking, in the flow. Collapsed by default; the header shows the duration. -->
+		<Collapsible
+			id={`${id}-${displayItem.id}`}
+			title={displayItem.token.summary}
+			attributes={displayItem.token.attributes}
+			messageDone={done}
+			className="mb-1.5"
+			buttonClassName="w-fit py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition"
+			chevronClassName="size-2.5"
+			chevronStrokeWidth="3"
+			chevron={true}
+		>
+			<div slot="content" class="mt-1">
+				<Markdown
+					id={`${id}-${displayItem.id}-md`}
+					{chatId}
+					{messageId}
+					content={displayItem.token.text}
+					{model}
+					{save}
+					{preview}
+					{compactPreview}
+					{done}
+					{allowEmbeds}
+					{editCodeBlock}
+					{topPadding}
+					{sourceIds}
+					{onSourceClick}
+					{onTaskClick}
+					{onToolCallResolved}
+					{onSave}
+					{onUpdate}
+					{onPreview}
+				/>
+			</div>
+		</Collapsible>
 	{:else if displayItem.type === 'detail_group'}
 		<ConsecutiveDetailsGroup
 			id={`${id}-${displayItem.id}`}

@@ -186,14 +186,18 @@
 	$: prefixText = hasActiveDetails ? $i18n.t('Exploring') : $i18n.t('Explored');
 </script>
 
-<div {id} class="w-full min-w-0">
-	<div class="flex w-full min-w-0 items-center gap-2">
+<!-- Tool activity, presented as a card in the same shape as the Tasks panel: a bordered
+     rounded container whose header carries the summary and a chevron on the far right, and
+     whose body holds the individual calls. Collapsed by default, because the transcript the
+     user reads is the prose; the transcript of how it was produced is reference material. -->
+<div {id} class="my-2 w-full min-w-0 rounded-2xl border border-gray-50 dark:border-gray-850 bg-white dark:bg-gray-900">
+	<div class="flex w-full min-w-0 items-center gap-2 px-3.5 py-2">
 		<div
 			role="button"
 			tabindex="0"
-			class="flex-1 min-w-0 py-0.5 text-left {compactPreview
+			class="flex-1 min-w-0 text-left {compactPreview
 				? 'text-xs'
-				: 'text-[0.9375rem]'} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
+				: 'text-[0.8125rem]'} text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition cursor-pointer"
 			aria-label={$i18n.t('Toggle details')}
 			aria-expanded={open}
 			on:click={() => {
@@ -308,7 +312,10 @@
 	{/if}
 
 	{#if open}
-		<div transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}>
+		<div
+			class="max-h-[40vh] overflow-y-auto overflow-x-hidden px-3.5 pb-3 space-y-0.5"
+			transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}
+		>
 			{#if absorbed.length > 0}
 				<!-- Narration that sat between the calls in this run, shown in the order it was
 				     written so the run reads as a transcript rather than a bare call list. -->

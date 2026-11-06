@@ -66,6 +66,13 @@ export type OutputDisplayItem =
 			tokens: OutputDetailToken[];
 	  }
 	| {
+			// Thinking, rendered inline in the message flow rather than inside the
+			// collapsed activity card, so reasoning stays readable next to the answer.
+			type: 'reasoning';
+			id: string;
+			token: OutputDetailToken;
+	  }
+	| {
 			type: 'file';
 			id: string;
 			item: Record<string, unknown>;
@@ -94,8 +101,13 @@ type ResponseStreamEvent = {
 	[key: string]: unknown;
 };
 
+// Tool and action types that belong in the collapsed activity card.
+//
+// 'reasoning' is deliberately NOT here. Thinking is part of how the answer reads: the user
+// wants thinking, then the response, then thinking again, with only the tool calls kept in a
+// separate collapsed surface. Grouping reasoning with tool calls buried the model's actual
+// reasoning inside the thing it was reasoning about, which is the opposite of useful.
 const GROUPABLE_OUTPUT_TYPES = new Set([
-	'reasoning',
 	'function_call',
 	'open_webui:code_interpreter',
 	'web_search_call',
@@ -422,6 +434,21 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 			const token = buildDetailToken(item, index === output.length - 1, toolOutputByCallId);
 			if (token) {
 				hoistedDetailTokens.push(token);
+			}
+			return;
+		}
+
+		// Reasoning is kept in the message flow rather than in the activity card, so the
+		// transcript reads thinking, response, thinking, while the tool calls sit apart.
+		// It renders through the existing Collapsible, collapsed by default, which is what
+		// produces the familiar 'Thought for N seconds' line.
+		if (item.type === 'reasoning') {
+			if (getReasoningText(item).trim()) {
+				displayItems.push({
+					type: 'reasoning',
+					id: item.id ?? `reasoning-${index}`,
+					token: buildReasoningToken(item, index === output.length - 1)
+				});
 			}
 			return;
 		}
