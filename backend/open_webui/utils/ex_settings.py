@@ -32,6 +32,15 @@ DEFAULTS = {
     "ragTopK": 6,                # passages returned per turn
     "ragMaxChars": 4000,         # character budget for the retrieved block
     "ragMinScore": 0.25,         # cosine floor; below this a hit is noise
+    # Context window policy. The engine serves 262144 tokens; the stock compaction threshold
+    # is 80000, so the default here is the real ceiling rather than the cautious one. The
+    # reply reserve is held back so the answer itself never truncates.
+    "contextMode": "full",       # full | compact. full spends the whole window before summarizing
+    "contextWindow": 262144,     # the engine ceiling; lower it only if the engine is lowered
+    "replyReserve": 16384,       # tokens held back from the window for the reply
+    "trimToolOutput": True,      # trim stale tool results before touching conversation text
+    "keepToolTurns": 3,          # tool results kept intact, counted from the end
+    "tailInject": True,          # inject context blocks at the tail so the KV cache survives
     # Feature E: the UI records the backend choice. It is a preference, not a promise;
     # the status endpoint reports what is actually serving the model.
     "backend": "auto",           # auto | llamacpp | strata

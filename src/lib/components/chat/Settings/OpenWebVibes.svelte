@@ -149,6 +149,19 @@
 		}
 	};
 
+	const runForgetMemory = async () => {
+		const chatId = currentChatId();
+		if (!chatId) return;
+		try {
+			const { forgetExMemory } = await import('$lib/apis/ex');
+			await forgetExMemory(localStorage.token, chatId);
+			memoryHits = [];
+			await refreshMemoryStatus();
+		} catch (e) {
+			console.error('forget memory failed', e);
+		}
+	};
+
 	const runMemorySearch = async () => {
 		const query = memoryQuery.trim();
 		if (!query) return;
@@ -457,6 +470,215 @@
 					}}
 				/>
 			</UserSettingRow>
+		</UserSettingSection>
+
+		<UserSettingSection title="Context window">
+			<UserSettingRow
+				let:labelId
+				label="Spend the whole window"
+				description="Use the engine's real 262144 token ceiling before summarizing. Off keeps the old compact-at-80000 behaviour."
+			>
+				<Switch
+					state={ex.contextMode !== 'compact'}
+					ariaLabelledbyId={labelId}
+					on:change={(e) => {
+						saveEx({ contextMode: e.detail ? 'full' : 'compact' });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Window (tokens)"
+				description="262144 is what the engine actually serves. Lower it only if the engine was lowered."
+			>
+				<input
+					type="number"
+					min="4096"
+					step="1024"
+					id={`${labelId}-control`}
+					value={ex.contextWindow}
+					aria-label="Window tokens"
+					class="h-7 w-24 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					on:change={(e) => {
+						saveEx({ contextWindow: parseInt(e.currentTarget.value, 10) || 262144 });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Reply reserve"
+				description="Tokens held back from the window so the answer itself never truncates."
+			>
+				<input
+					type="number"
+					min="1024"
+					step="1024"
+					id={`${labelId}-control`}
+					value={ex.replyReserve}
+					aria-label="Reply reserve tokens"
+					class="h-7 w-24 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					on:change={(e) => {
+						saveEx({ replyReserve: parseInt(e.currentTarget.value, 10) || 16384 });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Trim stale tool output"
+				description="Shrink old tool results before touching conversation text. This is what keeps an agent run going instead of summarizing it."
+			>
+				<Switch
+					state={ex.trimToolOutput}
+					ariaLabelledbyId={labelId}
+					on:change={(e) => {
+						saveEx({ trimToolOutput: e.detail });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Tool results kept intact"
+				description="How many of the newest tool results stay in full, counted from the end."
+			>
+				<input
+					type="number"
+					min="0"
+					step="1"
+					id={`${labelId}-control`}
+					value={ex.keepToolTurns}
+					aria-label="Tool results kept"
+					class="h-7 w-16 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					on:change={(e) => {
+						saveEx({ keepToolTurns: parseInt(e.currentTarget.value, 10) || 0 });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Inject context at the tail"
+				description="Keeps the prompt prefix byte identical so the engine reuses its KV cache. Off means a full re-prefill every turn."
+			>
+				<Switch
+					state={ex.tailInject}
+					ariaLabelledbyId={labelId}
+					on:change={(e) => {
+						saveEx({ tailInject: e.detail });
+					}}
+				/>
+			</UserSettingRow>
+		</UserSettingSection>
+
+		<UserSettingSection title="Memory (RAG)">
+			<UserSettingRow
+				let:labelId
+				label="Per-chat memory"
+				description="Index this chat locally and pull relevant passages back each turn. Survives deleting the chat."
+			>
+				<Switch
+					state={ex.ragMemory}
+					ariaLabelledbyId={labelId}
+					on:change={(e) => {
+						saveEx({ ragMemory: e.detail });
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Passages per turn"
+				description="How many memories the RAG slider sends to the model."
+			>
+				<input
+					type="range"
+					min="0"
+					max="20"
+					step="1"
+					id={`${labelId}-control`}
+					value={ex.ragTopK}
+					aria-label="Passages per turn"
+					class="w-40 accent-blue-500"
+					on:input={(e) => {
+						saveEx({ ragTopK: parseInt(e.currentTarget.value, 10) || 0 });
+					}}
+				/>
+				<span class="ml-2 text-xs text-gray-500 dark:text-gray-400">{ex.ragTopK}</span>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
+				label="Relevance floor"
+				description="Cosine score below which a hit is treated as noise."
+			>
+				<input
+					type="number"
+					min="0"
+					max="1"
+					step="0.05"
+					id={`${labelId}-control`}
+					value={ex.ragMinScore}
+					aria-label="Relevance floor"
+					class="h-7 w-20 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					on:change={(e) => {
+						saveEx({ ragMinScore: parseFloat(e.currentTarget.value) || 0 });
+					}}
+				/>
+			</UserSettingRow>
+
+			<div class="px-1 py-2 text-xs text-gray-500 dark:text-gray-400">
+				{memoryStatus
+					? `${memoryStatus.chat_count} passages stored for this chat, ${memoryStatus.dimensions} dims, ${memoryStatus.embed_model}`
+					: 'memory store not reporting'}
+			</div>
+
+			<div class="flex items-center gap-2 px-1 py-1">
+				<input
+					type="text"
+					bind:value={memoryQuery}
+					placeholder="Search memory (empty chat = search everything)"
+					class="h-8 flex-1 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					on:keydown={(e) => {
+						if (e.key === 'Enter') runMemorySearch();
+					}}
+				/>
+				<button
+					class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-200 disabled:opacity-50 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+					disabled={memorySearching}
+					on:click={runMemorySearch}
+				>
+					{memorySearching ? 'Searching' : 'Search'}
+				</button>
+			</div>
+
+			{#if memoryHits.length}
+				<div class="flex flex-col gap-1 px-1 py-1">
+					{#each memoryHits as hit, i (i)}
+						<div class="rounded-lg bg-gray-50 px-2 py-1.5 text-xs dark:bg-gray-850">
+							<span class="mr-2 font-mono text-[10px] text-gray-400">{hit.score.toFixed(3)}</span>
+							<span class="text-gray-700 dark:text-gray-300">{hit.text.slice(0, 220)}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<div class="flex gap-2 px-1 py-2">
+				<button
+					class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+					on:click={refreshMemoryStatus}
+				>
+					Refresh
+				</button>
+				<button
+					class="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
+					on:click={runForgetMemory}
+				>
+					Forget this chat
+				</button>
+			</div>
 		</UserSettingSection>
 
 		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.backend.title')}>

@@ -403,7 +403,9 @@
 	const getAvailableSettings = (personalTabs: SettingsTab[], administratorTabs: SettingsTab[]) => {
 		const personalSettings = personalTabs.filter((tab) => {
 			if (tab.id === 'connections') {
-				return $config?.features?.enable_direct_connections;
+				// Hidden in this fork: direct connections mean an outbound call to a provider that
+				// bills an external account. Local engines do not need it.
+				return false;
 			}
 
 			if (tab.id === 'tools') {
@@ -441,10 +443,17 @@
 			return true;
 		});
 
+		// This fork runs local engines. Surfaces that only make sense against a hosted account are
+		// removed rather than merely disabled, so nobody goes looking for a feature that cannot
+		// work here: the evaluation arena and its Elo leaderboard, and the outbound provider
+		// connections that would bill an external account.
+		const forkHiddenTabs = new Set(['admin:evaluations', 'admin:connections']);
+
 		return (
 			$user?.role === 'admin' ? [...personalSettings, ...administratorTabs] : personalSettings
 		).filter(
 			(tab) =>
+				!forkHiddenTabs.has(tab.id) &&
 				(tab.id !== 'admin:analytics' || ($config?.features?.enable_admin_analytics ?? true)) &&
 				(tab.id !== 'admin:apps' || $config?.features?.enable_apps)
 		);

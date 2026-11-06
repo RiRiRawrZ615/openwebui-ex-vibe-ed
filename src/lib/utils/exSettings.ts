@@ -16,7 +16,15 @@ export type ExSettings = {
 	ragMemory: boolean;
 	ragTopK: number;
 	ragMaxChars: number;
-	ragMinScore: number;
+	ragMinScore: number; 
+	// Context window policy. The engine serves 262144 tokens, so the default is the real
+	// ceiling rather than the old cautious 80000 that summarized a chat at 31 percent.
+	contextMode: 'full' | 'compact';
+	contextWindow: number;
+	replyReserve: number;
+	trimToolOutput: boolean;
+	keepToolTurns: number;
+	tailInject: boolean;
 	backend: string;
 	modelPath: string;
 	allowInstall: boolean;
@@ -61,7 +69,13 @@ export const EX_DEFAULTS: ExSettings = {
 	ragMemory: true,
 	ragTopK: 6,
 	ragMaxChars: 4000,
-	ragMinScore: 0.25,
+	ragMinScore: 0.25, 
+	contextMode: 'full',
+	contextWindow: 262144,
+	replyReserve: 16384,
+	trimToolOutput: true,
+	keepToolTurns: 3,
+	tailInject: true,
 	backend: 'auto',
 	modelPath: '',
 	allowInstall: false,

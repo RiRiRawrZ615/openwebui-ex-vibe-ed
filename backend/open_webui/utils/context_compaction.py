@@ -237,7 +237,7 @@ async def _load_config() -> dict:
         'chat.context_compaction.retention_percentage',
         'chat.context_compaction.prompt_template',
     )
-    token_threshold = _parse_positive_int(values.get('chat.context_compaction.token_threshold')) or 80000
+    token_threshold = _parse_positive_int(values.get('chat.context_compaction.token_threshold')) or 240000
     return {
         'enable': bool(values.get('chat.context_compaction.enable', False)),
         'token_threshold': token_threshold,
@@ -256,11 +256,15 @@ def _parse_positive_int(value: Any) -> int | None:
 
 
 def _clamp_retention_percentage(value: Any) -> int:
+    # Retention is how much of the transcript is kept verbatim when a sum of everything still
+    # exceeds the window. The old ceiling of 50 meant at least half of every compaction was
+    # replaced by a paraphrase, which is exactly the data loss people notice. 70 is the default
+    # and 95 is allowed, because the summarizer should be a last resort, not the main mechanism.
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        parsed = 40
-    return min(50, max(10, parsed))
+        parsed = 70
+    return min(95, max(10, parsed))
 
 
 def _resolve_token_threshold(global_threshold: int, global_cap: int, metadata: dict) -> int:
@@ -322,11 +326,30 @@ async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict
 
 
 def _build_context_usage(tokens: int, threshold: int) -> dict:
+    # Percent used to be measured against the compaction threshold, which told the user nothing
+    # useful: 100 percent meant "we are about to summarize you", not "the window is full". The
+    # percentage is now against the engine window, and the compaction point is reported
+    # separately so both numbers are visible and neither is ambiguous.
+    try:
+        from open_webui.utils.ex_context_window import (
+            DEFAULT_CONTEXT_WINDOW,
+            resolve_budget,
+        )
+
+        window = DEFAULT_CONTEXT_WINDOW
+        budget = resolve_budget(window)
+    except Exception:
+        window = 262144
+        budget = max(1, window - 16384)
     return {
         'tokens': tokens,
         'estimated_tokens': tokens,
         'threshold': threshold,
-        'percent': round((tokens / threshold) * 100) if threshold > 0 else 0,
+        'percent': round((tokens / window) * 100) if window > 0 else 0,
+        'window': window,
+        'budget': budget,
+        'compaction_at': threshold,
+        'percent_of_budget': round((tokens / budget) * 100) if budget > 0 else 0,
         'source': 'estimated',
     }
 
@@ -390,7 +413,7 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
     return estimated > threshold
 
 
-def _find_compaction_boundary(messages: list[dict], retention_percentage: int = 40) -> int:
+def _find_compaction_boundary(messages: list[dict], retention_percentage: int = 70) -> int:
     retention_percentage = _clamp_retention_percentage(retention_percentage)
     keep_count = max(2, len(messages) * retention_percentage // 100)
     target = max(1, len(messages) - keep_count)

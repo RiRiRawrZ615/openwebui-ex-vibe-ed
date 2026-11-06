@@ -1,0 +1,465 @@
+"""Context window manager for the EX fork.
+
+The stock behaviour compacts at 80000 tokens against an engine that serves 262144, so a chat
+gets summarized, and loses detail, while sitting at 31 percent of what the model can actually
+hold. This module replaces that with a policy that spends the real ceiling.
+
+Three separate problems, deliberately kept apart:
+
+1. **Prefix stability.** A model server reuses its KV cache only while the prompt prefix is
+   byte identical. Anything injected at the head of the message list, or anything that rewrites
+   an earlier system message in place, throws away the cache and forces a full re-prefill of
+   the whole conversation. Injection therefore happens at the tail, immediately before the
+   newest user turn. This is the single most important property in this file, and
+   ``inject_at_tail`` is the only sanctioned way to add context.
+
+2. **Budget.** The window is the engine's real ceiling, not a conservative guess. The budget is
+   ceiling minus the room reserved for the reply, so the reply itself never truncates.
+
+3. **Overflow.** At some point an endless chat exceeds any ceiling. When it does, the thing to
+   drop is stale tool output, because it is the largest and least load bearing part of an
+   agentic transcript. Conversation text is only touched when that is not enough.
+
+Nothing here rewrites history that the user can see. The stored chat is untouched; this only
+shapes what goes into one request.
+"""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Iterable
+
+# The engine ceiling. The strata profile passes --max-context 262144, so this is measured
+# rather than aspirational. Kept as a constant because a wrong ceiling here means either a
+# wasted window or a hard API error mid generation.
+DEFAULT_CONTEXT_WINDOW = 262144
+
+# Room for the reply. A request that fills the window leaves the sampler nowhere to write, so
+# the budget is always ceiling minus this.
+DEFAULT_REPLY_RESERVE = 16384
+
+# Below this there is no point trimming; a window this small is a misconfiguration, not a chat.
+MIN_USEFUL_WINDOW = 4096
+
+# Tool output older than this many trailing messages is a trimming candidate once we are over
+# budget. Matches the existing EX toolOutputWindow default so the two do not disagree.
+DEFAULT_KEEP_TOOL_TURNS = 3
+
+# What a trimmed tool body is replaced with. Explicit, so the model knows something was removed
+# and does not treat the stub as the real result.
+TOOL_STUB = "[older tool output trimmed to fit the context window; it is still in the chat]"
+
+# Headroom target after trimming. Aiming for exactly the budget means the next turn trips again
+# immediately, and every turn then pays a re-prefill. Landing a little under keeps the prefix
+# stable for several turns at a time.
+TRIM_TARGET_RATIO = 0.85
+
+CONTEXT_MARKER = "[ex context]"
+
+
+# --------------------------------------------------------------------------------------
+# measurement
+# --------------------------------------------------------------------------------------
+
+
+def estimate_tokens(text: Any) -> int:
+    """Rough token count.
+
+    Deliberately cheap and slightly pessimistic. A tokenizer call per message per turn costs
+    more than the accuracy is worth here, and being 10 percent high only means trimming a
+    little earlier. Floored at 1 for any non-empty string so a short message never counts as
+    free.
+    """
+    if not text:
+        return 0
+    if not isinstance(text, str):
+        text = str(text)
+    return max(1, len(text) // 4 + 1)
+
+
+def message_tokens(message: dict) -> int:
+    """Tokens in one message, including the small per message overhead."""
+    if not isinstance(message, dict):
+        return 0
+    total = 4
+    content = message.get("content")
+    if isinstance(content, str):
+        total += estimate_tokens(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                total += estimate_tokens(part.get("text") or "")
+                if part.get("type") == "image_url":
+                    # An image is priced by the server, not by its URL length. A flat
+                    # allowance keeps the estimate from pretending images are free.
+                    total += 850
+            elif isinstance(part, str):
+                total += estimate_tokens(part)
+    for key in ("tool_calls", "tool_call_id", "name"):
+        if message.get(key):
+            try:
+                total += estimate_tokens(json.dumps(message[key]))
+            except (TypeError, ValueError):
+                total += 8
+    return total
+
+
+def messages_tokens(messages: Iterable[dict]) -> int:
+    return sum(message_tokens(message) for message in messages or [])
+
+
+def is_tool_message(message: dict) -> bool:
+    """A tool result, which is the safe thing to trim."""
+    if not isinstance(message, dict):
+        return False
+    if message.get("role") == "tool":
+        return True
+    return bool(message.get("tool_call_id"))
+
+
+def is_tool_call_message(message: dict) -> bool:
+    """An assistant turn that called tools. Its body is usually empty, so it is cheap to keep,
+    but trimming it would orphan the tool result that follows."""
+    return isinstance(message, dict) and bool(message.get("tool_calls"))
+
+
+# --------------------------------------------------------------------------------------
+# budget
+# --------------------------------------------------------------------------------------
+
+
+def resolve_window(window: Any = None) -> int:
+    """The usable ceiling, clamped to something sane."""
+    try:
+        value = int(window)
+    except (TypeError, ValueError):
+        value = DEFAULT_CONTEXT_WINDOW
+    return max(MIN_USEFUL_WINDOW, value)
+
+
+def resolve_budget(
+    window: Any = None,
+    *,
+    reply_reserve: Any = DEFAULT_REPLY_RESERVE,
+    max_tokens: Any = None,
+) -> int:
+    """Tokens available for the prompt.
+
+    The reserve is the larger of the configured reserve and the reply allowance, because a
+    request asking for 32768 tokens of output needs that much room left in the window no matter
+    what the reserve says.
+    """
+    ceiling = resolve_window(window)
+    try:
+        reserve = int(reply_reserve)
+    except (TypeError, ValueError):
+        reserve = DEFAULT_REPLY_RESERVE
+    try:
+        requested = int(max_tokens) if max_tokens is not None else 0
+    except (TypeError, ValueError):
+        requested = 0
+    reserve = max(0, reserve, requested)
+    return max(MIN_USEFUL_WINDOW, ceiling - reserve)
+
+
+# --------------------------------------------------------------------------------------
+# trimming
+# --------------------------------------------------------------------------------------
+
+
+def trim_tool_output(
+    messages: list[dict],
+    *,
+    keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
+) -> list[dict]:
+    """Replace the bodies of old tool results with a short stub.
+
+    Walks from the end, keeping the last ``keep_tool_turns`` tool results intact. Everything
+    older becomes a stub. The message itself is kept rather than removed, because a dangling
+    tool_call with no matching tool result is rejected outright by most chat templates, and
+    that failure is far worse than a missing body.
+
+    Never mutates the input. Returns a new list with new dicts for the changed messages.
+    """
+    try:
+        keep = max(0, int(keep_tool_turns))
+    except (TypeError, ValueError):
+        keep = DEFAULT_KEEP_TOOL_TURNS
+
+    seen = 0
+    out: list[dict] = []
+    for message in reversed(list(messages or [])):
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        if is_tool_message(message) and not is_tool_call_message(message):
+            seen += 1
+            if seen > keep:
+                existing = message.get("content")
+                if existing != TOOL_STUB:
+                    trimmed = dict(message)
+                    trimmed["content"] = TOOL_STUB
+                    out.append(trimmed)
+                    continue
+        out.append(message)
+    out.reverse()
+    return out
+
+
+def trim_to_budget(
+    messages: list[dict],
+    budget: int,
+    *,
+    keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
+    protect_tail: int = 4,
+) -> list[dict]:
+    """Get under budget by trimming tool output first, oldest first.
+
+    Deliberately does NOT drop messages. Dropping a user or assistant message changes what the
+    model was told, which is the data loss this whole module exists to avoid. If trimming tool
+    output cannot get under budget, the list is returned as trimmed and the caller decides:
+    either accept the prefill cost or hand off to the summarizer.
+
+    ``protect_tail`` conversation messages are never considered for trimming beyond the tool
+    keep window, because those are the turns being discussed right now.
+    """
+    result = trim_tool_output(messages, keep_tool_turns=keep_tool_turns)
+    if messages_tokens(result) <= budget:
+        return result
+
+    # Still over. Trim in passes, each pass dropping the keep window by one, so the most recent
+    # tool results are the last to go.
+    keep = keep_tool_turns
+    while keep > 0:
+        keep -= 1
+        result = trim_tool_output(messages, keep_tool_turns=keep)
+        if messages_tokens(result) <= budget:
+            return result
+
+    return result
+
+
+def apply_overflow_policy(
+    messages: list[dict],
+    budget: int,
+    *,
+    keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
+    target_ratio: float = TRIM_TARGET_RATIO,
+) -> tuple[list[dict], dict]:
+    """Trim toward a headroom target rather than exactly to the budget.
+
+    Returns the shaped messages and a report describing what happened, so the UI can show it
+    and a test can assert on it.
+    """
+    incoming = messages_tokens(messages)
+    report: dict[str, Any] = {
+        "tokens_before": incoming,
+        "budget": budget,
+        "trimmed": False,
+        "tokens_after": incoming,
+        "over_budget": incoming > budget,
+    }
+    if budget <= 0 or incoming <= budget:
+        return list(messages or []), report
+
+    target = max(MIN_USEFUL_WINDOW, int(budget * max(0.1, min(1.0, float(target_ratio)))))
+    shaped = trim_to_budget(
+        messages, target, keep_tool_turns=keep_tool_turns
+    )
+    after = messages_tokens(shaped)
+    report["trimmed"] = after != incoming
+    report["tokens_after"] = after
+    report["still_over"] = after > budget
+    return shaped, report
+
+
+# --------------------------------------------------------------------------------------
+# prefix safe injection
+# --------------------------------------------------------------------------------------
+
+
+def tail_insert_index(messages: list[dict]) -> int:
+    """Where a context block belongs: immediately before the newest user turn.
+
+    Positioning here is the whole trick. The engine has already cached every token before this
+    point, so inserting here invalidates only the newest user turn and the block itself. Inserting
+    at index 0 would invalidate the entire transcript and force a full re-prefill on every turn.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, dict) and message.get("role") == "user":
+            return index
+    return len(messages)
+
+
+def inject_at_tail(
+    messages: list[dict],
+    block: str | None,
+    *,
+    role: str = "system",
+    marker: str = CONTEXT_MARKER,
+) -> tuple[list[dict], dict]:
+    """Insert one context block before the newest user turn.
+
+    Returns the new list and a report. The input list is not mutated.
+
+    The block carries a marker so a later pass can find and replace it instead of stacking a
+    second copy, which would otherwise grow without bound across a long chat.
+    """
+    messages = list(messages or [])
+    report = {"injected": False, "index": None, "tokens": 0}
+    if not block or not block.strip():
+        return messages, report
+
+    body = block if block.lstrip().startswith(marker) else f"{marker}\n{block.rstrip()}"
+    report["tokens"] = estimate_tokens(body)
+
+    # A previous turn's block sits at the tail. Remove it rather than leaving both, so the
+    # insertion point stays shallow.
+    existing = [
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, dict)
+        and message.get("role") == role
+        and str(message.get("content", "")).lstrip().startswith(marker)
+    ]
+    for index in reversed(existing):
+        messages.pop(index)
+
+    index = tail_insert_index(messages)
+    messages.insert(index, {"role": role, "content": body})
+    report["injected"] = True
+    report["index"] = index
+    return messages, report
+
+
+def strip_context_blocks(
+    messages: list[dict], *, marker: str = CONTEXT_MARKER
+) -> list[dict]:
+    """Remove injected blocks, for a caller that wants the bare transcript."""
+    return [
+        message
+        for message in messages or []
+        if not (
+            isinstance(message, dict)
+            and str(message.get("content", "")).lstrip().startswith(marker)
+        )
+    ]
+
+
+# --------------------------------------------------------------------------------------
+# soft compaction: lossless, the preferred fallback
+# --------------------------------------------------------------------------------------
+
+
+def compaction_fingerprint(messages: list[dict], up_to: int) -> str:
+    """A stable digest of the span that would be summarized.
+
+    Two purposes. It lets the caller skip re-summarizing a span that has not changed, and it
+    lets a stored summary be validated: if the span it described has changed, the summary is
+    stale and must not be trusted. Nothing in the stock implementation does this check, which
+    is why a stale summary can quietly contradict the live transcript.
+    """
+    import hashlib
+
+    digest = hashlib.sha1()
+    for message in messages[:up_to]:
+        if not isinstance(message, dict):
+            continue
+        digest.update(str(message.get("role", "")).encode("utf-8", "ignore"))
+        content = message.get("content")
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                content = str(content)
+        digest.update(b"\x00")
+        digest.update(content.encode("utf-8", "ignore"))
+        digest.update(b"\x01")
+    return digest.hexdigest()
+
+
+def boundary_for_ratio(messages: list[dict], keep_ratio: float = 0.4) -> int:
+    """Index that keeps roughly ``keep_ratio`` of the transcript, on a message boundary.
+
+    The stock implementation keeps a percentage of messages, which is wrong when one tool result
+    is 40000 tokens and a hundred chat messages are 2000. This walks by tokens and then snaps to
+    a boundary that does not split a tool exchange.
+    """
+    messages = list(messages or [])
+    if not messages:
+        return 0
+    total = messages_tokens(messages)
+    if total <= 0:
+        return 0
+    keep_ratio = max(0.0, min(1.0, float(keep_ratio)))
+    target = total * keep_ratio
+
+    running = 0
+    boundary = len(messages)
+    for index in range(len(messages) - 1, -1, -1):
+        running += message_tokens(messages[index])
+        if running >= target:
+            boundary = index
+            break
+    else:
+        boundary = 0
+
+    # Never cut between a tool call and its result: that produces an invalid message list.
+    while boundary > 0 and boundary < len(messages):
+        previous = messages[boundary - 1]
+        current = messages[boundary]
+        if isinstance(previous, dict) and previous.get("tool_calls"):
+            boundary -= 1
+            continue
+        if isinstance(current, dict) and current.get("tool_call_id"):
+            boundary -= 1
+            continue
+        break
+    return max(0, min(boundary, len(messages)))
+
+
+# --------------------------------------------------------------------------------------
+# the whole policy
+# --------------------------------------------------------------------------------------
+
+
+def shape_request(
+    messages: list[dict],
+    *,
+    window: Any = None,
+    reply_reserve: Any = DEFAULT_REPLY_RESERVE,
+    max_tokens: Any = None,
+    keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
+    context_block: str | None = None,
+) -> tuple[list[dict], dict]:
+    """The one function the middleware calls.
+
+    Order matters:
+
+    1. Measure against the real ceiling.
+    2. If over budget, trim tool output toward the headroom target. Lossless for conversation
+       text.
+    3. Inject the context block at the tail, after trimming, so the block is not itself
+       counted as something to trim.
+    4. Report what happened, including whether the request is still over budget, in which case
+       the caller falls back to summarization.
+
+    ``context_block`` is what used to be prepended at the head. Passing it here is how RAG and
+    previous-context injection become cache friendly.
+    """
+    budget = resolve_budget(window, reply_reserve=reply_reserve, max_tokens=max_tokens)
+    shaped, report = apply_overflow_policy(
+        messages, budget, keep_tool_turns=keep_tool_turns
+    )
+    if context_block:
+        shaped, injection = inject_at_tail(shaped, context_block)
+        report["injection"] = injection
+        report["tokens_after"] = messages_tokens(shaped)
+    report["budget"] = budget
+    report["window"] = resolve_window(window)
+    report["headroom"] = max(0, budget - report["tokens_after"])
+    report["percent"] = (
+        round((report["tokens_after"] / budget) * 100) if budget > 0 else 0
+    )
+    return shaped, report

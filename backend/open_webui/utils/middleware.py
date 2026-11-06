@@ -91,6 +91,7 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
+from open_webui.utils.ex_context_window import shape_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_trim import gate_features
@@ -2269,6 +2270,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # interpreted on the way in. The cost is stated plainly: a block at the message head
     # invalidates the byte identical prefix llama.cpp reuses, so this forces a re-prefill.
     ex_previous_context = None
+    # Context that must reach the model but must NOT be prepended at the head. Collected here
+    # and injected once, at the tail, after the request has been shaped to fit the window.
+    ex_context_blocks = []
     if ex_settings['enabled'] and ex_settings.get('previousContext'):
         try:
             ex_previous_context = read_previous_context(DATA_DIR, metadata.get('chat_id', ''), ex_settings)
@@ -2277,7 +2281,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     # Delivered as a user message so it reads as an instruction from RiRi rather
                     # than as system framing.
                     ex_previous_context['role'] = 'user'
-                form_data['messages'] = [ex_previous_context] + form_data.get('messages', [])
+                # Deferred: collected here, injected at the tail further down. Prepending at the
+                # head invalidates the byte identical prefix the engine reuses, which reprefills
+                # the whole transcript every turn. See ex_context_window.tail_insert_index.
+                ex_context_blocks.append(
+                    {
+                        'role': ex_previous_context.get('role') or 'system',
+                        'content': ex_previous_context.get('content') or '',
+                    }
+                )
             metadata['exPreviousContext'] = ex_previous_context
         except Exception:
             log.exception('EX previous context read failed; continuing with the chat as stored')
@@ -2317,13 +2329,53 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 ),
             }
             if ex_memory.get('block'):
-                # Delivered as a system message so retrieved history reads as context rather
-                # than as something the user just said.
-                form_data['messages'] = [
+                # Deferred to the tail pass below, for the same prefix reason. Delivered as a
+                # system message so retrieved history reads as context rather than as something
+                # the user just said.
+                ex_context_blocks.append(
                     {'role': 'system', 'content': ex_memory['block']}
-                ] + form_data.get('messages', [])
+                )
     except Exception:
         log.exception('EX memory failed; continuing with the chat as stored')
+
+    # Context window shaping. One pass, after every context source has been collected and before
+    # the request is assembled.
+    #
+    # The engine serves 262144 tokens. The stock compaction threshold is 80000, so a chat used to
+    # get summarized at 31 percent of the window. This spends the real ceiling, trims stale tool
+    # output before touching conversation text, and injects the collected blocks at the TAIL so
+    # the byte identical prefix the engine caches survives from turn to turn.
+    try:
+        if ex_settings.get('contextMode') != 'compact':
+            ex_window = ex_settings.get('contextWindow') or 262144
+            ex_block = '\n\n'.join(
+                block['content'] for block in ex_context_blocks if block.get('content')
+            )
+            shaped, ex_shape = shape_request(
+                form_data.get('messages', []),
+                window=ex_window,
+                reply_reserve=ex_settings.get('replyReserve') or 16384,
+                max_tokens=(form_data.get('params') or {}).get('max_tokens'),
+                keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
+                context_block=ex_block if ex_settings.get('tailInject', True) else None,
+            )
+            form_data['messages'] = shaped
+            metadata['exContextWindow'] = ex_shape
+        else:
+            # Compact mode keeps stock behaviour: head injection, stock threshold.
+            for block in reversed(ex_context_blocks):
+                form_data['messages'] = [
+                    {'role': block.get('role') or 'system', 'content': block['content']}
+                ] + form_data.get('messages', [])
+    except Exception:
+        log.exception('EX context window shaping failed; falling back to the unshaped request')
+        for block in reversed(ex_context_blocks):
+            try:
+                form_data['messages'] = [
+                    {'role': block.get('role') or 'system', 'content': block['content']}
+                ] + form_data.get('messages', [])
+            except Exception:
+                pass
 
     form_data['messages'] = process_messages_with_output(
         form_data.get('messages', []),
