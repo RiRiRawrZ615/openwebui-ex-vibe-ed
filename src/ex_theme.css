@@ -220,3 +220,35 @@
 .owv-themed.dark :focus-visible {
 	outline-color: color-mix(in oklab, var(--owv-accent) 55%, white);
 }
+/* ------------------------------------------------------------ let the gradient through
+
+   The gradient was declared and shipping, and still invisible, because of one line in
+   src/routes/(app)/+layout.svelte:
+
+       class="... bg-white dark:bg-gray-900 h-screen ..."
+
+   That is the full-viewport app shell, and `dark:bg-gray-900` is an opaque color. It covers
+   html and body completely, so .owv-themed's background had nothing to show through. Every
+   earlier attempt to fix the "missing gradient" was fighting the wrong layer.
+
+   Retinting --color-gray-900 does not help here, and that is the trap: retinting makes the
+   shell navy instead of black, which looks like progress while still being flat. The shell has
+   to stop painting a background at all so the page gradient becomes the backdrop and the
+   panels float on it.
+
+   Scoped to .owv-themed, so stock dark mode keeps its solid shell and this cannot regress it.
+   The class is applied before first paint by the boot script in src/app.html.
+*/
+.owv-themed .app-shell,
+.owv-themed .app > .h-screen {
+	background-color: transparent !important;
+}
+
+/* The sidebar is the other full-height pane that would otherwise cover the gradient. It sits
+   on top of the backdrop as a translucent panel instead of an opaque one, which is what makes
+   the corner read as a gradient rather than as two flat navy rectangles. */
+.owv-themed.dark .owv-sidebar,
+.owv-themed .owv-sidebar {
+	background-color: color-mix(in srgb, var(--color-gray-950) 72%, transparent) !important;
+	backdrop-filter: blur(10px);
+}
