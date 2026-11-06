@@ -15,6 +15,7 @@ import os
 
 from open_webui.env import DATA_DIR
 from open_webui.utils.auth import get_current_user
+from open_webui.models.users import User
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.ex_backend import BACKENDS, INSTALLABLE, auto_select, install_plan, path_allowed
 from open_webui.utils.ex_handshake import load_handshake, render_status
