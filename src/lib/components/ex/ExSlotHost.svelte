@@ -69,7 +69,17 @@ which is the legitimate reading of "fills a slot". Both are possible and neither
 	});
 </script>
 
-<div class="ex-slot" data-slot={slot} data-plugin={entry?.plugin ?? ''} data-state={entry?.state ?? 'unknown'}>
+<!-- h-full min-h-0 flex flex-col is load-bearing, not decoration. The slot lives inside a
+     wrapper that is overflow-hidden, so a plain auto-height div hands the child an unbounded
+     height. A tab that asks for h-full + overflow-y-auto then collapses to its content height
+     and gets clipped instead of scrolling, which is exactly what happened to the OpenWebVibes
+     tab. A flex column with min-h-0 gives the child a resolved height to overflow against. -->
+<div
+	class="ex-slot h-full min-h-0 flex flex-col"
+	data-slot={slot}
+	data-plugin={entry?.plugin ?? ''}
+	data-state={entry?.state ?? 'unknown'}
+>
 	{#if entry?.renderable && PluginComp}
 		<PluginComp
 			slot={slot}

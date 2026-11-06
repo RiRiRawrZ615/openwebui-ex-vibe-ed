@@ -83,13 +83,28 @@ Three facts worth stating plainly, because each one was a real failure:
 		applyOwvRamp();
 
 		// Gradient double-write. The stylesheet already declares it on .owv-themed, but a
-		// user-supplied accent or gradient from the settings tab would need a per-user value,
-		// and the token sheet above only carries the engine's default. Writing it here keeps
-		// the user's gradient authoritative without needing a rebuild.
+		// user-supplied gradient from the settings tab needs a per-user value, and the token
+		// sheet above only carries the engine's default. Writing it here keeps the user's
+		// gradient authoritative without needing a rebuild.
+		//
+		// Two bugs lived here, and together they explained "the bottom right is still too bright"
+		// even after the stylesheet stop was darkened:
+		//
+		// 1. Only stops[0] and stops[1] were used. A three-stop ramp lost its last stop entirely,
+		//    so a deliberately darkened end colour was never painted.
+		// 2. The endpoints were hardcoded to 0% and 100%, so two stops stretched across the whole
+		//    viewport. With a 160deg ramp that puts the brightest colour in the bottom-right
+		//    corner, which is exactly the corner that read as too bright.
+		//
+		// Positions are now distributed evenly across however many stops the user supplied, the
+		// same way the stylesheet does it, so both paths produce identical output for the same
+		// input and the last stop actually lands where it was designed to.
 		const stops = (ex.themeGradient ?? []).filter(Boolean);
 		const gradient =
 			stops.length >= 2
-				? `linear-gradient(160deg, ${stops[0]} 0%, ${stops[1]} 100%)`
+				? `linear-gradient(160deg, ${stops
+						.map((stop, i) => `${stop} ${Math.round((i / (stops.length - 1)) * 100)}%`)
+						.join(', ')})`
 				: OWV_GRADIENT_HEX;
 		document.documentElement.style.setProperty('--owv-gradient', gradient);
 

@@ -217,7 +217,7 @@
 						<XMark className="size-4" strokeWidth="2.5" />
 					</div>
 				{:else if toolCallCount > 0}
-					<div class="text-emerald-500 dark:text-emerald-400">
+					<div class="text-[color:var(--owv-ok)]">
 						<CheckCircle className="size-4" strokeWidth="2" />
 					</div>
 				{:else}

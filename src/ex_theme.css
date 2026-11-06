@@ -37,9 +37,25 @@
 	--owv-text: #e6ecf5;
 	--owv-text-dim: #9cb2cd;
 
-	/* Deep navy to lighter blue, three stops. The two-stop version read as "solid blue" on
-	   a phone; the dark anchor at the corner is what makes it read as a gradient. */
-	--owv-gradient: linear-gradient(160deg, #0b1729 0%, #16304f 46%, #274a78 100%);
+	/* Success colour for completed steps, tool-call ticks and copy confirmations.
+
+	   These used stock Tailwind green-500/emerald-500, which is a saturated lime-green that
+	   belongs to no other part of this palette and clashed hard with the navy surface. This
+	   is a desaturated teal-leaning mint: clearly "done" at a glance, still inside the cool
+	   family the rest of the UI lives in. */
+	--owv-ok: #5fd3a4;
+	--owv-ok-dim: #3f9d7a;
+
+	/* Deep-space gradient for the empty chat surface.
+
+	   Three stops rather than two: a two-stop ramp read as a flat "solid blue" on a phone,
+	   and the dark corner anchor is what makes it read as a gradient at all.
+
+	   The far stop used to be #274a78, a saturated steel blue. It read as too bright against
+	   dark-mode message text and fought the accent glow on the icon, so it is pulled down in
+	   both lightness and saturation. The mid stop keeps the ramp even instead of brightening
+	   in one visible jump across the middle of the viewport. */
+	--owv-gradient: linear-gradient(160deg, #0a1421 0%, #101d2e 44%, #17293d 100%);
 
 	--owv-ramp-50: #233d66;
 	--owv-ramp-100: #223b61;
@@ -64,7 +80,7 @@
 .owv-themed {
 	background: var(--owv-gradient);
 	background-attachment: fixed;
-	background-color: #0b1729;
+	background-color: #0a1421;
 }
 
 .owv-themed body,

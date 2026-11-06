@@ -19,7 +19,10 @@ export type ExSettings = {
 	ragMinScore: number; 
 	// Context window policy. The engine serves 262144 tokens, so the default is the real
 	// ceiling rather than the old cautious 80000 that summarized a chat at 31 percent.
-	contextMode: 'full' | 'compact';
+	// Context window. The whole window is always spent; there is no compact mode.
+	// The separate summarise-and-drop compaction feature was removed because it derived its own
+	// threshold and rewrote the transcript, which fought these settings and made the window
+	// figure unreliable.
 	contextWindow: number;
 	replyReserve: number;
 	trimToolOutput: boolean;
@@ -70,7 +73,6 @@ export const EX_DEFAULTS: ExSettings = {
 	ragTopK: 6,
 	ragMaxChars: 4000,
 	ragMinScore: 0.25, 
-	contextMode: 'full',
 	contextWindow: 262144,
 	replyReserve: 16384,
 	trimToolOutput: true,
@@ -96,7 +98,18 @@ export const EX_DEFAULTS: ExSettings = {
 	themeAccent: '#24406b',
 	themeSurface: '#12203a',
 	themeText: '#e6ecf5',
-	themeGradient: ['#24406b', '#3a6ba5'],
+	// The page gradient, as an ordered list of stops.
+	//
+	// This used to default to ['#24406b', '#3a6ba5']. OpenWebVibesTheme.svelte writes whatever is
+	// here onto <html> as an INLINE custom property, and inline beats every stylesheet rule, so
+	// this default silently overrode --owv-gradient in src/ex_theme.css. That is why editing the
+	// stylesheet changed nothing in the browser: #3a6ba5 is a saturated steel blue and it was
+	// the real page background the whole time. Sampled from a screenshot, the rendered surface
+	// was rgb(53,91,143) = #355b8f, which sits at about 60 percent along the old #24406b -> #3a6ba5
+	// ramp. The default now matches the stylesheet exactly, so the two cannot disagree.
+	//
+	// Keep in sync with --owv-gradient in src/ex_theme.css and OWV_GRADIENT_HEX in exPalette.ts.
+	themeGradient: ['#0a1421', '#101d2e', '#17293d'],
 	themeAdjust: 0,
 	themeWallpaper: '',
 	themeIcon: '',

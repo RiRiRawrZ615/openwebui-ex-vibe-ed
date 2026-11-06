@@ -312,7 +312,25 @@
 	});
 </script>
 
-<div id="tab-openwebvibes" class="flex flex-col h-full overflow-y-auto text-sm">
+<!-- Scrolling this tab needs three things, and the previous attempt only had the first.
+
+     1. A bounded height. The wrapper above is overflow-hidden, so without a resolved height
+        overflow-y-auto degrades to overflow-visible and the content is clipped with no bar.
+        The parent chain now resolves: modal panel (fixed height, flex col) -> content pane
+        (min-h-0 flex-1) -> ExSlotHost (h-full min-h-0 flex-col) -> this div.
+
+     2. min-h-0 on each flex item in that chain, because a flex item defaults to
+        min-height:auto and refuses to shrink below its content.
+
+     3. The tab must NOT lay its own content out as a flex column. This was the actual bug:
+        `flex flex-col` on this container makes every child a flex item, and flex items shrink
+        by default (flex-shrink: 1). So each section compressed to fit the box instead of
+        overflowing it, the container's scrollHeight never exceeded its clientHeight, and
+        there was nothing to scroll even though the last rows were unreadable and unreachable.
+        Block layout lets the children keep their natural height and overflow properly.
+
+     A plain block that scrolls is the fix, not more classes on a flex column. -->
+<div id="tab-openwebvibes" class="block h-full min-h-0 overflow-y-auto owv-scroll text-sm">
 	<h2 class="text-sm font-medium text-gray-900 dark:text-white">
 		{$i18n.t('settings.personal.vibes.title')}
 	</h2>
@@ -473,20 +491,6 @@
 		</UserSettingSection>
 
 		<UserSettingSection title="Context window">
-			<UserSettingRow
-				let:labelId
-				label="Spend the whole window"
-				description="Use the engine's real 262144 token ceiling before summarizing. Off keeps the old compact-at-80000 behaviour."
-			>
-				<Switch
-					state={ex.contextMode !== 'compact'}
-					ariaLabelledbyId={labelId}
-					on:change={(e) => {
-						saveEx({ contextMode: e.detail ? 'full' : 'compact' });
-					}}
-				/>
-			</UserSettingRow>
-
 			<UserSettingRow
 				let:labelId
 				label="Window (tokens)"

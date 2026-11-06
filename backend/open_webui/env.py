@@ -960,9 +960,19 @@ if LICENSE_PUBLIC_KEY:
 # visual, textual, symbolic identifiers, metadata, and surrounding UI.
 # Do not alter, remove, obscure, or replace it except as LICENSE permits:
 # https://docs.openwebui.com/license.
-WEBUI_NAME = os.getenv('WEBUI_NAME', 'Open WebUI')
-if WEBUI_NAME != 'Open WebUI':
-    WEBUI_NAME += ' (Open WebUI)'
+# Open Web Vibes product name.
+#
+# Upstream appended ' (Open WebUI)' to any WEBUI_NAME override, which silently
+# defeated the override: the sidebar name, the browser title, the PWA title and the
+# meta description all read this value, so every one of them kept showing the
+# upstream name no matter what WEBUI_NAME was set to. That is why the rename never
+# took anywhere the config flows.
+#
+# Replacing the upstream name and logo is permitted by LICENSE for deployments of at
+# most fifty end users, which this local fork is. See static/BRANDING.md. The upstream
+# assets are preserved in static/.upstream_branding_backup/ and the upstream LICENSE,
+# LICENSE_NOTICE and LICENSE_HISTORY files are untouched.
+WEBUI_NAME = os.getenv('WEBUI_NAME', 'Open Web Vibes')
 
 # LICENSE covers this Open WebUI branding surface, including this favicon
 # and any visual, textual, or symbolic identifiers it preserves.

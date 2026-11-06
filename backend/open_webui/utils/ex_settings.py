@@ -35,7 +35,10 @@ DEFAULTS = {
     # Context window policy. The engine serves 262144 tokens; the stock compaction threshold
     # is 80000, so the default here is the real ceiling rather than the cautious one. The
     # reply reserve is held back so the answer itself never truncates.
-    "contextMode": "full",       # full | compact. full spends the whole window before summarizing
+    #
+    # This is the only context policy. The separate summarise-and-drop compaction feature was
+    # removed because it derived its own threshold and rewrote the transcript behind these
+    # settings, which is the conflict that made the window figure unreliable.
     "contextWindow": 262144,     # the engine ceiling; lower it only if the engine is lowered
     "replyReserve": 16384,       # tokens held back from the window for the reply
     "trimToolOutput": True,      # trim stale tool results before touching conversation text

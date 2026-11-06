@@ -56,6 +56,22 @@ USAGE_TOKEN_KEYS = {
     'cache_creation_input_tokens',
 }
 
+# Prompt-side figures must NOT be summed across model calls inside one turn.
+#
+# Every call in a turn re-sends the whole conversation, so call N's prompt already
+# contains call 1..N-1's prompt plus their completions. Adding those prompts together
+# counts the same context again once per round, which is the "count adds onto itself"
+# symptom: a three-round agentic turn reported ~2.4x the tokens the engine ever served.
+#
+# input_tokens is therefore a measurement of prompt occupancy: the latest value wins.
+# total_tokens is recomputed from it, which keeps window ratio and compaction threshold
+# honest. Only output_tokens (text generated) is genuinely additive across rounds.
+USAGE_LATEST_KEYS = {
+    'input_tokens',
+    'total_tokens',
+}
+USAGE_ADDITIVE_TOKEN_KEYS = USAGE_TOKEN_KEYS - USAGE_LATEST_KEYS
+
 USAGE_COST_KEYS = {
     'cost',
     'total_cost',
@@ -123,7 +139,8 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
         )
     )
 
-    for key in USAGE_SUMMABLE_KEYS:
+    additive_keys = (USAGE_ADDITIVE_TOKEN_KEYS | USAGE_COST_KEYS) - USAGE_LATEST_KEYS
+    for key in additive_keys:
         if key in current_usage or key in incoming_usage:
             current_value = current_usage.get(key, 0)
             incoming_value = incoming_usage.get(key, 0)
@@ -131,6 +148,31 @@ def merge_usage(current: dict | None, incoming: dict | None) -> dict:
                 result[key] = (current_value if _is_numeric_usage_value(current_value) else 0) + (
                     incoming_value if _is_numeric_usage_value(incoming_value) else 0
                 )
+
+    # Prompt-side values are measurements, not contributions. The newest call saw the
+    # largest prompt, so it is the one that describes occupancy. Summing them re-counts
+    # every earlier turn of context. (See USAGE_LATEST_KEYS.)
+    for key in USAGE_LATEST_KEYS - {'total_tokens'}:
+        chosen = next(
+            (
+                record[key]
+                for record in (incoming_usage, current_usage)
+                if _is_numeric_usage_value(record.get(key))
+            ),
+            None,
+        )
+        if chosen is not None:
+            result[key] = chosen
+        else:
+            result.pop(key, None)
+
+    # total_tokens is derived, never accumulated, so it always equals in + out.
+    if _is_numeric_usage_value(result.get('input_tokens')) and _is_numeric_usage_value(
+        result.get('output_tokens')
+    ):
+        result['total_tokens'] = result['input_tokens'] + result['output_tokens']
+    else:
+        result.pop('total_tokens', None)
 
     for key in USAGE_DETAIL_KEYS:
         if isinstance(current_usage.get(key), dict) or isinstance(incoming_usage.get(key), dict):

@@ -92,13 +92,20 @@
 		let detailGroup = [];
 
 		const flushDetailGroup = () => {
-			if (detailGroup.length > 1) {
+			// A run of detail rows always collapses into one summary line, even when the run is a
+			// single call.
+			//
+			// This used to fall back to the bare token when length === 1, so a lone tool call
+			// rendered as a full standalone row while any run of two or more collapsed into
+			// "Explored 2 run_command". A turn with a dozen separate single calls therefore
+			// produced a dozen paragraph-length rows stacked down the message, which read as
+			// noise. One entry point per run keeps the column scannable: every detail run is one
+			// line with the tool names, and the full rows are one click away inside it.
+			if (detailGroup.length > 0) {
 				displayTokens.push({
 					type: 'detail_group',
 					items: [...detailGroup]
 				});
-			} else if (detailGroup.length === 1) {
-				displayTokens.push(detailGroup[0]);
 			}
 
 			detailGroup = [];

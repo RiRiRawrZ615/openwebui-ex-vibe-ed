@@ -181,51 +181,27 @@ async def apply_summary_checkpoint(messages: list[dict]) -> tuple[list[dict], st
 
 
 async def compact_chat_branch(request, user, chat: Any, model_id: str, models: dict) -> dict:
-    config = await _load_config()
-    if not config['enable']:
-        return {'ok': True, 'compacted': False, 'reason': 'disabled'}
+    """Summarise-and-drop is disabled. Kept as a named entry point, not a live feature.
 
-    chat_data = chat.chat or {}
-    history = chat_data.get('history') or {}
-    current_id = getattr(chat, 'current_message_id', None) or history.get('currentId')
-    if not current_id:
-        current_id = chat_data.get('currentId') or chat_data.get('branchPointMessageId')
-    if not current_id and isinstance(chat_data.get('messages'), list) and chat_data['messages']:
-        current_id = chat_data['messages'][-1].get('id')
-    if not current_id:
-        return {'ok': True, 'compacted': False, 'reason': 'empty'}
+    Open Web Vibes owns context policy through the ex options: contextMode, contextWindow,
+    replyReserve, trimToolOutput and keepToolTurns. Compaction is a second, independent
+    policy that fights them directly.
 
-    messages_map = await Chats.get_messages_map_by_chat_id(chat.id)
-    if not messages_map:
-        messages_map = history.get('messages') or {}
+    The conflict is not cosmetic. Compaction summarises and drops messages at
+    `compact_after_tokens`, which is derived from a threshold rather than from the engine
+    ceiling the ex options set. With contextMode='full' the intent is to spend the whole
+    window; compaction would silently start summarising well before that. Two systems wrote
+    the same field (`contextSummary`) and each treated it as authoritative, so the visible
+    context and the window figure could disagree.
 
-    messages, previous_summary = _apply_latest_summary_checkpoint(get_message_list(messages_map, current_id))
-    compacted_messages = messages[:-1]
-    recent_messages = messages[-1:]
-    if not compacted_messages or not recent_messages:
-        return {'ok': True, 'compacted': False, 'reason': 'too_short'}
-
-    summary = await _generate_summary(
-        request,
-        None,
-        user,
-        model_id,
-        models,
-        compacted_messages,
-        recent_messages,
-        previous_summary,
-        config['prompt_template'],
-    )
-    await Chats.upsert_message_to_chat_by_id_and_message_id(
-        chat.id, current_id, {'contextSummary': summary}, touch=False
-    )
-
+    Returning a truthful no-op beats leaving a toggle that quietly reshapes the transcript
+    behind the user's back. Every caller already handles `compacted: False`.
+    """
     return {
         'ok': True,
-        'compacted': True,
-        'dropped_messages': len(compacted_messages),
-        'kept_messages': len(recent_messages),
-        'summary_chars': len(summary),
+        'compacted': False,
+        'reason': 'removed',
+        'detail': 'Context compaction is disabled in Open Web Vibes. Context policy is set by the ex options.',
     }
 
 

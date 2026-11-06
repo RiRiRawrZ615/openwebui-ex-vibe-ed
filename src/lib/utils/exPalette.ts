@@ -27,7 +27,9 @@ export const OWV_TEXT_HEX = '#e6ecf5';
 export const OWV_LINE_HEX = '#22405f';
 
 /** Three stop navy. The corner anchor is what makes it read as a gradient on a phone. */
-export const OWV_GRADIENT_HEX = 'linear-gradient(160deg, #0b1729 0%, #16304f 46%, #274a78 100%)';
+// Kept in sync with --owv-gradient in src/ex_theme.css. The end stop is deliberately
+// desaturated: a brighter blue washed out message text and clashed with the icon glow.
+export const OWV_GRADIENT_HEX = 'linear-gradient(160deg, #0a1421 0%, #101d2e 44%, #17293d 100%)';
 
 /**
  * True when the runtime theme owns the page. Read from the DOM rather than from settings on

@@ -584,8 +584,10 @@
 							}}
 						/>
 					{:else}
+						<!-- owv-code-fence wraps long lines and scrolls vertically. See src/app.css for the
+						     rule and for the html.owv-code-nowrap opt-out. -->
 						<pre
-							class=" hljs p-4 px-5 overflow-x-auto"
+							class=" hljs p-4 px-5 owv-code-fence"
 							style="border-top-left-radius: 0px; border-top-right-radius: 0px; {(executing ||
 								stdout ||
 								stderr ||

@@ -1,0 +1,13 @@
+{
+  "name": "Open Web Vibes",
+  "short_name": "OWV",
+  "description": "Open Web Vibes: a local-first agentic chat frontend with a live engine behind it.",
+  "icons": [
+    { "src": "/static/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/web-app-manifest-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "theme_color": "#0a1421",
+  "background_color": "#0a1421",
+  "display": "standalone"
+}

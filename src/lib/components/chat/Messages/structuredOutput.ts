@@ -370,17 +370,14 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 	}
 
 	const flushDetails = () => {
-		if (currentDetailTokens.length > 1) {
+		// Same rule as getDisplayTokens in MarkdownTokens.svelte: a single call is still a run.
+		// Emitting it as detail_single re-introduced the bare full-width row that made single
+		// tool calls look like spam next to collapsed multi-call runs.
+		if (currentDetailTokens.length > 0) {
 			displayItems.push({
 				type: 'detail_group',
 				id: `detail-group-${displayItems.length}`,
 				tokens: [...currentDetailTokens]
-			});
-		} else if (currentDetailTokens.length === 1) {
-			displayItems.push({
-				type: 'detail_single',
-				id: `detail-${displayItems.length}`,
-				token: currentDetailTokens[0]
 			});
 		}
 		currentDetailTokens.length = 0;

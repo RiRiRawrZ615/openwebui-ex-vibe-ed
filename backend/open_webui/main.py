@@ -2986,7 +2986,9 @@ async def get_manifest_json():
             'description': f'{app.state.WEBUI_NAME} is an open, extensible, user-friendly interface for AI that adapts to your workflow.',
             'start_url': '/',
             'display': 'standalone',
-            'background_color': '#343541',
+            # Matches --owv-gradient's dark anchor so the PWA splash is not a white flash
+            # before the navy page paints.
+            'background_color': '#0a1421',
             'icons': [
                 # LICENSE covers this Open WebUI install icon.
                 # Do not alter, remove, obscure, or replace it except as LICENSE permits:

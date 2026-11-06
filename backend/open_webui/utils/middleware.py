@@ -2346,43 +2346,41 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # get summarized at 31 percent of the window. This spends the real ceiling, trims stale tool
     # output before touching conversation text, and injects the collected blocks at the TAIL so
     # the byte identical prefix the engine caches survives from turn to turn.
+    #
+    # This is now the only context policy. The old `contextMode` switch had a compact branch that
+    # skipped shaping entirely and left the request to the stock summarise-and-drop path, which
+    # meant two systems disagreed about how much of the window was in play. That branch is gone,
+    # along with the compaction feature it deferred to.
     try:
-        if ex_settings.get('contextMode') != 'compact':
-            # Per-request override wins. Without this, a client that knows the real engine
-            # window (a small context profile, a proxy, a test) could not get the shaping
-            # pass to respect it, and the pass would happily build a request larger than the
-            # window while reporting the default.
-            # The client's params live on form_data, not on metadata. metadata is built in
-            # utils/chat.py from chat_id and message_id only, so reading params from there
-            # silently produced the default every time and the override never applied.
-            ex_params = {
-                **(form_data.get('params') or {}),
-                **(metadata.get('params') or {}),
-            }
-            ex_window = (
-                ex_params.get('exContextWindow')
-                or ex_settings.get('contextWindow')
-                or 262144
-            )
-            ex_block = '\n\n'.join(
-                block['content'] for block in ex_context_blocks if block.get('content')
-            )
-            shaped, ex_shape = shape_request(
-                form_data.get('messages', []),
-                window=ex_window,
-                reply_reserve=ex_settings.get('replyReserve') or 16384,
-                max_tokens=(form_data.get('params') or {}).get('max_tokens'),
-                keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
-                context_block=ex_block if ex_settings.get('tailInject', True) else None,
-            )
-            form_data['messages'] = shaped
-            metadata['exContextWindow'] = ex_shape
-        else:
-            # Compact mode keeps stock behaviour: head injection, stock threshold.
-            for block in reversed(ex_context_blocks):
-                form_data['messages'] = [
-                    {'role': block.get('role') or 'system', 'content': block['content']}
-                ] + form_data.get('messages', [])
+        # Per-request override wins. Without this, a client that knows the real engine
+        # window (a small context profile, a proxy, a test) could not get the shaping
+        # pass to respect it, and the pass would happily build a request larger than the
+        # window while reporting the default.
+        # The client's params live on form_data, not on metadata. metadata is built in
+        # utils/chat.py from chat_id and message_id only, so reading params from there
+        # silently produced the default every time and the override never applied.
+        ex_params = {
+            **(form_data.get('params') or {}),
+            **(metadata.get('params') or {}),
+        }
+        ex_window = (
+            ex_params.get('exContextWindow')
+            or ex_settings.get('contextWindow')
+            or 262144
+        )
+        ex_block = '\n\n'.join(
+            block['content'] for block in ex_context_blocks if block.get('content')
+        )
+        shaped, ex_shape = shape_request(
+            form_data.get('messages', []),
+            window=ex_window,
+            reply_reserve=ex_settings.get('replyReserve') or 16384,
+            max_tokens=(form_data.get('params') or {}).get('max_tokens'),
+            keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
+            context_block=ex_block if ex_settings.get('tailInject', True) else None,
+        )
+        form_data['messages'] = shaped
+        metadata['exContextWindow'] = ex_shape
     except Exception:
         log.exception('EX context window shaping failed; falling back to the unshaped request')
         for block in reversed(ex_context_blocks):
