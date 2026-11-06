@@ -94,7 +94,15 @@ from open_webui.utils.context_compaction import apply_summary_checkpoint, compac
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_trim import gate_features
-from open_webui.utils.ex_wiring import drain_steering, journal_window, loop_check, read_previous_context, retry_call
+from open_webui.utils.ex_wiring import (
+    drain_steering,
+    index_chat_memory,
+    journal_window,
+    loop_check,
+    read_previous_context,
+    retrieve_chat_memory,
+    retry_call,
+)
 from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
 from open_webui.utils.files import (
     convert_markdown_base64_images,
@@ -2273,6 +2281,49 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             metadata['exPreviousContext'] = ex_previous_context
         except Exception:
             log.exception('EX previous context read failed; continuing with the chat as stored')
+
+    # EX per-chat memory. Two halves that have to happen in this order.
+    #
+    # Index first: the stored chat as it stands now, so the passages exist before the
+    # retrieval below can miss them. This is deliberately before the prompt is assembled,
+    # because the whole point is that the text outlives the prompt.
+    #
+    # Then retrieve, and prepend. Placed after EX previous context so a pasted export still
+    # wins position, and gated so it costs nothing when the setting is off.
+    try:
+        if ex_settings['enabled'] and ex_settings.get('ragMemory') and metadata.get('chat_id'):
+            ex_index = index_chat_memory(
+                DATA_DIR,
+                metadata.get('chat_id', ''),
+                form_data.get('messages', []),
+                ex_settings,
+            )
+            metadata['exMemoryIndex'] = ex_index
+
+            ex_memory = retrieve_chat_memory(
+                DATA_DIR,
+                metadata.get('chat_id', ''),
+                form_data.get('messages', []),
+                ex_settings,
+            )
+            metadata['exMemory'] = {
+                'hits': len(ex_memory.get('hits') or []),
+                'query': ex_memory.get('query'),
+                'error': ex_memory.get('error'),
+                'top_score': (
+                    (ex_memory.get('hits') or [{}])[0].get('score')
+                    if ex_memory.get('hits')
+                    else None
+                ),
+            }
+            if ex_memory.get('block'):
+                # Delivered as a system message so retrieved history reads as context rather
+                # than as something the user just said.
+                form_data['messages'] = [
+                    {'role': 'system', 'content': ex_memory['block']}
+                ] + form_data.get('messages', [])
+    except Exception:
+        log.exception('EX memory failed; continuing with the chat as stored')
 
     form_data['messages'] = process_messages_with_output(
         form_data.get('messages', []),

@@ -13,6 +13,10 @@ export type ExSettings = {
 	showInfoIcon: boolean;
 	launcherStatus: boolean;
 	verbatimSummary: boolean;
+	ragMemory: boolean;
+	ragTopK: number;
+	ragMaxChars: number;
+	ragMinScore: number;
 	backend: string;
 	modelPath: string;
 	allowInstall: boolean;
@@ -54,6 +58,10 @@ export const EX_DEFAULTS: ExSettings = {
 	showInfoIcon: true,
 	launcherStatus: true,
 	verbatimSummary: false,
+	ragMemory: true,
+	ragTopK: 6,
+	ragMaxChars: 4000,
+	ragMinScore: 0.25,
 	backend: 'auto',
 	modelPath: '',
 	allowInstall: false,

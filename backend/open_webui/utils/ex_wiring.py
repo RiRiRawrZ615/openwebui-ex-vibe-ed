@@ -38,6 +38,7 @@ from open_webui.utils.ex_recovery import decide, retry_permitted
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats
+from open_webui.utils.ex_rag import ChatMemory, should_retrieve
 from open_webui.utils.ex_steering import load_queue, mark_applied, normalize_chat_id, plan as steering_plan
 
 
@@ -202,6 +203,68 @@ def loop_check(output_items: list[dict], messages: list[dict], settings: dict, a
 
 
 
+def _memory(data_dir) -> ChatMemory:
+    """One store handle per call. Cheap to build, and stateless between requests."""
+    return ChatMemory(data_dir)
+
+
+def index_chat_memory(data_dir, chat_id: str, messages: list[dict], settings: dict) -> dict:
+    """Index this chat's messages. Never raises into the request path.
+
+    Indexing failure is always survivable: the turn proceeds with whatever context the
+    prompt already has. A broken vector store must not become a broken chat.
+    """
+    if not should_retrieve(settings) or not chat_id:
+        return {"indexed": 0, "skipped": 0, "error": None, "disabled": True}
+    try:
+        return _memory(data_dir).index_messages(chat_id, messages)
+    except Exception as exc:
+        log.exception("EX memory index failed; continuing without indexing")
+        return {"indexed": 0, "skipped": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def retrieve_chat_memory(
+    data_dir,
+    chat_id: str | None,
+    messages: list[dict],
+    settings: dict,
+) -> dict:
+    """Retrieve a context block for this turn. Never raises into the request path."""
+    empty = {"block": None, "hits": [], "query": "", "error": None, "disabled": True}
+    if not should_retrieve(settings):
+        return empty
+    try:
+        return _memory(data_dir).retrieve_block(
+            messages,
+            chat_id=chat_id or None,
+            top_k=int(settings.get("ragTopK") or 6),
+            max_chars=int(settings.get("ragMaxChars") or 4000),
+            min_score=float(settings.get("ragMinScore") or 0.25),
+        )
+    except Exception as exc:
+        log.exception("EX memory retrieve failed; continuing without retrieval")
+        return {**empty, "disabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def chat_memory_status(data_dir, chat_id: str | None = None) -> dict:
+    """Report store health and how many passages this chat has. For the settings tab."""
+    try:
+        store = _memory(data_dir)
+        status = store.status()
+        status["chat_count"] = store.count(chat_id or None)
+        return status
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}", "chat_count": 0}
+
+
+def forget_chat_memory(data_dir, chat_id: str) -> dict:
+    """Drop one chat's passages. The chat record is untouched; only the index is."""
+    try:
+        return {"deleted": _memory(data_dir).forget_chat(chat_id)}
+    except Exception as exc:
+        return {"deleted": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def digest(settings: dict, compacted_messages: list[dict]) -> str | None:
     """Verbatim digest, or None when the setting is off.
 
@@ -237,4 +300,8 @@ __all__ = [
     "retry_call",
     "resolve_ex_settings",
     "format_stats_line",
+    "index_chat_memory",
+    "retrieve_chat_memory",
+    "chat_memory_status",
+    "forget_chat_memory",
 ]

@@ -65,6 +65,7 @@ ENTRYPOINTS = {
     "steering": ("build_item", "plan", "render_note", "pairing_safe_insert_index", "append_item", "load_queue"),
     "ui": ("resolve_manifest", "resolve_slots", "status"),
     "trim": ("resolve_gate", "gate_features", "status"),
+    "rag": ("build_records", "split_chunks", "build_query", "should_retrieve", "ChatMemory"),
     # The adapter the request path actually calls. It is a registry entry because a feature
     # module cannot be disabled while the adapter still calls into it.
     "wiring": ("journal_window", "loop_check", "stats", "live_estimate", "digest", "read_journal"),
@@ -88,6 +89,7 @@ DEPENDS = {
     "steering": ("settings",),
     "ui": ("settings",),
     "trim": ("settings",),
+    "rag": ("settings",),
     "modules": (),
     # Every feature depends only on the resolver, which is core and cannot be turned off, so
     # a feature edge alone can never produce a refusal. The adapter is the entry where a real

@@ -235,3 +235,57 @@ export type ExTrimReport = {
 export const getExTrim = async (token: string): Promise<ExTrimReport | { error: string }> => {
 	return jsonRequest('/ex/trim', token);
 };
+
+export type ExMemoryHit = {
+	text: string;
+	score: number;
+	role?: string;
+	chat_id?: string;
+	message_id?: string;
+};
+
+export type ExMemoryStatus = {
+	available: boolean;
+	reason?: string | null;
+	collection?: string;
+	embed_model?: string;
+	dimensions?: number;
+	path?: string;
+	chat_count?: number;
+};
+
+export type ExMemorySearch = {
+	query?: string;
+	hits: ExMemoryHit[];
+	block?: string | null;
+	error?: string | null;
+};
+
+export const getExMemory = async (
+	token: string,
+	chatId = ''
+): Promise<ExMemoryStatus | { error: string }> => {
+	const params = new URLSearchParams();
+	if (chatId) params.set('chat_id', chatId);
+	const qs = params.toString();
+	return jsonRequest(`/ex/memory${qs ? `?${qs}` : ''}`, token);
+};
+
+export const searchExMemory = async (
+	token: string,
+	query: string,
+	chatId = '',
+	topK = 6
+): Promise<ExMemorySearch | { error: string }> => {
+	const params = new URLSearchParams({ q: query });
+	if (chatId) params.set('chat_id', chatId);
+	params.set('top_k', String(topK));
+	return jsonRequest(`/ex/memory/search?${params.toString()}`, token);
+};
+
+export const forgetExMemory = async (
+	token: string,
+	chatId: string
+): Promise<{ deleted: number } | { error: string }> => {
+	return jsonRequest(`/ex/memory?chat_id=${encodeURIComponent(chatId)}`, token, 'DELETE');
+};

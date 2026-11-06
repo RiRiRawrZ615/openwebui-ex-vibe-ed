@@ -25,6 +25,13 @@ DEFAULTS = {
     "showInfoIcon": True,        # enriched i icon at end of message
     "launcherStatus": True,      # show launcher-override state in the EX tab
     "verbatimSummary": False,    # plain-text digest instead of model paraphrase
+    # Per-chat retrieval memory. Keeps the original text outside the prompt in a local
+    # vector index, and puts the few most relevant passages back on the next turn. This is
+    # what survives a compaction: the digest shrinks the transcript, this keeps a copy.
+    "ragMemory": True,           # index this chat and retrieve relevant passages
+    "ragTopK": 6,                # passages returned per turn
+    "ragMaxChars": 4000,         # character budget for the retrieved block
+    "ragMinScore": 0.25,         # cosine floor; below this a hit is noise
     # Feature E: the UI records the backend choice. It is a preference, not a promise;
     # the status endpoint reports what is actually serving the model.
     "backend": "auto",           # auto | llamacpp | strata

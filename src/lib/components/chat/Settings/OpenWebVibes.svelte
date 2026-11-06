@@ -22,6 +22,10 @@
 	getExSteering,
 	getExUi,
 	getExTrim,
+		getExMemory,
+		searchExMemory,
+		type ExMemoryStatus,
+		type ExMemoryHit,
 	addExSteering,
 		runExBatch,
 		runExImport,
@@ -74,6 +78,10 @@
 	let importSource = $state('');
 	let importTarget = $state('');
 	let importForce = $state(false);
+	let memoryStatus: ExMemoryStatus | null = $state(null);
+	let memoryQuery = $state('');
+	let memoryHits: ExMemoryHit[] = $state([]);
+	let memorySearching = $state(false);
 
 	// Params the fork can control live under settings.params. Params the launcher wrote
 	// into the handshake are reported, not overridden, because the launcher is what
@@ -118,6 +126,44 @@
 		planning = false;
 		plan = null;
 		checkingBackend = false;
+	};
+
+	const refreshMemoryStatus = async () => {
+		try {
+			const res = await getExMemory(localStorage.token, currentChatId());
+			memoryStatus = 'error' in res ? null : res;
+		} catch {
+			memoryStatus = null;
+		}
+	};
+
+	const currentChatId = (): string => {
+		// The tab lives in the settings modal, which is opened from a chat. The chat id is not
+		// passed down, so it is read from the route. Without this, indexing would be reported
+		// for an empty chat id and the count would always read zero.
+		try {
+			const match = window.location.pathname.match(/\/c\/([^/?#]+)/);
+			return match ? match[1] : '';
+		} catch {
+			return '';
+		}
+	};
+
+	const runMemorySearch = async () => {
+		const query = memoryQuery.trim();
+		if (!query) return;
+		memorySearching = true;
+		try {
+			// Scope to this chat by default. Clearing the chat id searches every indexed chat,
+			// which is the only way back to a conversation that no longer exists.
+			const res = await searchExMemory(localStorage.token, query, currentChatId(), ex.ragTopK || 6);
+			memoryHits = 'error' in res ? [] : res.hits;
+			if ('error' in res) toast.error(`${res.error}`);
+		} catch (e) {
+			memoryHits = [];
+			toast.error(`${e}`);
+		}
+		memorySearching = false;
 	};
 
 	const buildPlan = async () => {
@@ -248,6 +294,7 @@
 		refreshSteering();
 		refreshUi();
 		refreshTrim();
+		refreshMemoryStatus();
 		refreshSlots(localStorage.token);
 	});
 </script>
@@ -1065,6 +1112,113 @@
 					{$i18n.t('settings.personal.vibes.context.stored.label')}: {contextReport.stored_path}
 				</p>
 			{/if}
+		</UserSettingSection>
+
+		<UserSettingSection title="Memory">
+			<div class="flex flex-col gap-2 py-2">
+				<p class="text-xs text-gray-500">
+					Keeps this chat's original text in a local vector index and puts the most relevant
+					passages back on the next turn. This is what survives a compaction: the digest
+					shrinks the transcript, this keeps a copy of it on disk.
+				</p>
+
+				<div class="flex flex-wrap items-center gap-3 text-xs">
+					{#if memoryStatus === null}
+						<span class="text-gray-400">checking store...</span>
+					{:else if memoryStatus.available}
+						<span class="font-medium text-green-600 dark:text-green-400">store ready</span>
+						<span class="text-gray-500">
+							{memoryStatus.chat_count ?? 0} passages in this chat
+						</span>
+					{:else}
+						<span class="font-medium text-amber-600 dark:text-amber-400">retrieval unavailable</span>
+						<span class="text-gray-500">{memoryStatus.reason ?? 'unknown reason'}</span>
+					{/if}
+					<button
+						type="button"
+						class="rounded-lg px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5"
+						on:click={refreshMemoryStatus}>refresh</button
+					>
+				</div>
+
+				<UserSettingRow
+					let:labelId
+					label="Retrieve from this chat"
+					description="Index the chat and offer the closest passages each turn. Off means no indexing and no retrieval."
+				>
+					<Switch
+						id={`${labelId}-control`}
+						state={ex.ragMemory}
+						on:change={(e) => saveEx({ ragMemory: e.detail })}
+					/>
+				</UserSettingRow>
+
+				<UserSettingRow
+					let:labelId
+					label="Passages per turn"
+					description="How many chunks are offered to the model. More is not better; it competes with the live conversation."
+				>
+					<input
+						type="number"
+						min="1"
+						max="20"
+						step="1"
+						id={`${labelId}-control`}
+						value={ex.ragTopK}
+						class="h-7 w-16 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
+						on:change={(e) => saveEx({ ragTopK: parseInt(e.currentTarget.value, 10) || 6 })}
+					/>
+				</UserSettingRow>
+
+				<UserSettingRow
+					let:labelId
+					label="Character budget"
+					description="Cap on the whole retrieved block, so retrieval cannot quietly eat the context window."
+				>
+					<input
+						type="number"
+						min="500"
+						step="500"
+						id={`${labelId}-control`}
+						value={ex.ragMaxChars}
+						class="h-7 w-20 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
+						on:change={(e) => saveEx({ ragMaxChars: parseInt(e.currentTarget.value, 10) || 4000 })}
+					/>
+				</UserSettingRow>
+
+				<div class="mt-1 flex flex-col gap-2 border-t border-gray-100 pt-3 dark:border-white/5">
+					<p class="text-xs text-gray-500">
+						Search this chat, or every indexed chat. The cross-chat search is the
+						recovery path: if a chat was wiped, its passages are still on disk.
+					</p>
+					<div class="flex items-center gap-2">
+						<input
+							type="text"
+							bind:value={memoryQuery}
+							placeholder="what did we decide about..."
+							class="flex-1 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 py-1 text-xs text-gray-700 outline-hidden dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
+							on:keydown={(e) => e.key === 'Enter' && runMemorySearch()}
+						/>
+						<button
+							type="button"
+							class="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50 dark:bg-white/10 dark:text-gray-200"
+							disabled={memorySearching || !memoryQuery.trim()}
+							on:click={runMemorySearch}
+							>{memorySearching ? 'searching...' : 'search'}</button
+						>
+					</div>
+					{#if memoryHits.length > 0}
+						<div class="flex flex-col gap-1">
+							{#each memoryHits as hit, i (i)}
+								<div class="rounded-lg border border-gray-100/60 px-2 py-1 text-xs dark:border-white/5">
+									<span class="mr-2 font-mono text-[10px] text-gray-400">{hit.score.toFixed(3)}</span>
+									<span class="text-gray-600 dark:text-gray-300">{hit.text}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			</div>
 		</UserSettingSection>
 
 		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.steering.title')}>

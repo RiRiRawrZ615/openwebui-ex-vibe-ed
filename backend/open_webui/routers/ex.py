@@ -22,7 +22,12 @@ from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
 from open_webui.utils.ex_settings import resolve_ex_settings
-from open_webui.utils.ex_wiring import read_journal
+from open_webui.utils.ex_wiring import (
+    chat_memory_status,
+    forget_chat_memory,
+    read_journal,
+    retrieve_chat_memory,
+)
 from open_webui.utils.ex_theme import build_theme, css_tokens
 from open_webui.utils.ex_recovery import load_checkpoint, recovery_status
 from open_webui.utils.ex_modules import observed_from_tree, plugin_dir, resolve_enabled, status as modules_status
@@ -383,3 +388,59 @@ async def ex_trim(user: User = Depends(get_current_user)):
     """
     settings = resolve_ex_settings(user)
     return {"settings": trim_status(settings), "resolved": resolve_gate(settings)}
+
+# --- per-chat retrieval memory ---------------------------------------------------------
+
+
+@router.get("/memory")
+async def ex_memory_status(
+    chat_id: str = Query(default=''),
+    user: User = Depends(get_current_user),
+):
+    """Store health and how many passages this chat has indexed.
+
+    Reports availability honestly. A missing embedder is a downgrade, not a failure: the
+    chat still works, retrieval just does nothing, and this says which it is.
+    """
+    return chat_memory_status(DATA_DIR, chat_id or None)
+
+
+@router.get("/memory/search")
+async def ex_memory_search(
+    q: str = Query(default=''),
+    chat_id: str = Query(default=''),
+    top_k: int = Query(default=6),
+    user: User = Depends(get_current_user),
+):
+    """Search this chat's passages, or every chat when chat_id is empty.
+
+    The empty-chat_id form is the recovery path. If a chat has been wiped or compacted
+    away, its passages are still in the index, and this is how they are reached without
+    needing the chat record to exist.
+    """
+    if not q.strip():
+        raise HTTPException(status_code=400, detail='q is required')
+    settings = resolve_ex_settings(user)
+    result = retrieve_chat_memory(
+        DATA_DIR,
+        chat_id or None,
+        [{'role': 'user', 'content': q}],
+        {**settings, 'ragMemory': True},
+    )
+    return {
+        'query': result.get('query'),
+        'hits': result.get('hits') or [],
+        'block': result.get('block'),
+        'error': result.get('error'),
+    }
+
+
+@router.delete("/memory")
+async def ex_memory_forget(
+    chat_id: str = Query(default=''),
+    user: User = Depends(get_current_user),
+):
+    """Drop one chat's passages from the index. The chat record itself is untouched."""
+    if not is_saved_chat_id(chat_id):
+        raise HTTPException(status_code=400, detail='a saved chat_id is required')
+    return forget_chat_memory(DATA_DIR, chat_id)
