@@ -117,3 +117,55 @@ second bug, it is the pre-existing instance winning.
    `kill-owv` is blunt and runs the shutdown trap, killing the engine and forcing a full
    model reload.
 4. Never claim a UI change works without checking the served bytes or the built asset.
+---
+
+## 2026-11-06 · Session 2b: tool-call presentation, gradient, check icons
+
+Reported from a screenshot of a real message: horizontal scrollbars in tool call
+Input/Output panels, command spam (one row per call), a "dark green" tick that is not the
+new icon, and the bottom-right of the background gradient still too bright.
+
+### Root causes, all verified before editing
+
+1. **Horizontal scrollbars.** The panels that scroll horizontally are in
+   `common/ToolCallDisplay.svelte`, not `CodeBlock.svelte`. My earlier code-fence fix was
+   real but touched markdown fences, which are a different component, so it never affected
+   these. Lines using `whitespace-pre` + `overflow-x-auto` are the actual cause.
+2. **Command spam.** `MarkdownTokens.getDisplayTokens()` broke a tool-call run on *any*
+   non-detail token. A turn interleaves narration with calls, so "let me check X", call,
+   "now Y", call produced one group per call, each with its own full-width panel.
+3. **Bright gradient.** `DEFAULT_GRADIENT` in `backend/open_webui/utils/ex_theme.py` was
+   `("#24406b", "#3a6ba5")`. That far stop is saturated cobalt, and this engine applies the
+   gradient **at runtime**, writing `--owv-gradient` from here. Editing `src/ex_theme.css`
+   therefore had no visible effect, which is why the earlier palette/gradient edit appeared
+   to do nothing. The `navy` preset also still carried `#274a78`.
+4. **Dark green tick.** Two separate tick renderers. `ConsecutiveDetailsGroup` (the run
+   header) was already `--owv-ok`, but `ToolCallDisplay` (the individual call row) was still
+   `text-emerald-500 dark:text-emerald-400`.
+
+### Changes
+
+- `ToolCallDisplay.svelte`: all three `<pre>` blocks now use one `tool-call-pre` class with
+  `whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-h-80 overflow-y-auto
+  overflow-x-hidden`. Wrapping, vertical scroll, no horizontal scrollbar. Parent wrappers
+  gained `min-w-0` so the flex item can actually shrink instead of forcing overflow.
+- `ToolCallDisplay.svelte`: per-row tick uses `text-[color:var(--owv-ok)]`.
+- `MarkdownTokens.svelte`: a run only ends on another non-groupable details block or the end
+  of the message. Paragraph/text tokens are absorbed into the live run rather than breaking
+  it, so one turn produces one group.
+- `ConsecutiveDetailsGroup.svelte`: new `absorbed` prop; absorbed narration renders inside
+  the expanded panel in original order, so nothing is hidden.
+- `ex_theme.py`: `DEFAULT_GRADIENT` -> `("#1b3150", "#27415f")`, navy preset far stop
+  `#274a78` -> `#1e3350`. `py_compile` clean.
+
+### Verification
+
+`npm run build` completed (1m25s, adapter-static, wrote `build`). Confirmed in the emitted
+artefacts:
+- `tool-call-pre` and `absorbed` present in `chunks/2whVLftx.js`
+- `owv-ok)` and `overflow-wrap:anywhere` present in `assets/0.DpFm12_h.css`
+- the old `...p-2 overflow-x-auto` tool-call class returns zero matches
+
+### Deliberately NOT done
+Server was not restarted, per instruction. The visual changes are not live until
+`kill-owv-dirty` is run. The theme change also needs a restart since it lives in Python.

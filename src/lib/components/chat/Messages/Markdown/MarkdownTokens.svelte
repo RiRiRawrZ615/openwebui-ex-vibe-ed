@@ -87,9 +87,31 @@
 		return token?.type === 'details' && GROUPABLE_DETAIL_TYPES.has(token?.attributes?.type ?? '');
 	};
 
+	// A run of tool calls is only broken by content that genuinely separates it: another
+	// details block that is NOT groupable (a summary the user must read on its own), or the
+	// end of the message. Short prose in between does not break the run.
+	//
+	// This matters because a turn interleaves narration with tool calls: "let me check X",
+	// a call, "now Y", a call. Treating that prose as a run terminator produced a stack of
+	// single-call rows, each with its own full-width Input/Output panel, which is the spam
+	// this is here to fix. The prose is absorbed into the group and still rendered in order
+	// inside the expanded panel; only the summary line sits at the top level.
+	const ABSORBABLE_INTO_RUN = new Set(['paragraph', 'text', 'space', 'inline', 'escape']);
+
+	const isAbsorbableIntoRun = (token: Token) => {
+		if (ABSORBABLE_INTO_RUN.has(token?.type ?? '')) {
+			// Whitespace-only paragraphs would otherwise keep a run alive across a real break.
+			if (token?.type === 'space') return false;
+			if (token?.type === 'paragraph' && !(token?.text ?? '').trim()) return false;
+			return true;
+		}
+		return false;
+	};
+
 	const getDisplayTokens = (tokenList: Token[] = []) => {
 		const displayTokens = [];
 		let detailGroup = [];
+		let absorbed = [];
 
 		const flushDetailGroup = () => {
 			// A run of detail rows always collapses into one summary line, even when the run is a
@@ -104,16 +126,21 @@
 			if (detailGroup.length > 0) {
 				displayTokens.push({
 					type: 'detail_group',
-					items: [...detailGroup]
+					items: [...detailGroup],
+					absorbed: [...absorbed]
 				});
 			}
 
 			detailGroup = [];
+			absorbed = [];
 		};
 
 		for (const token of tokenList) {
 			if (isGroupableDetailToken(token)) {
 				detailGroup.push(token);
+			} else if (isAbsorbableIntoRun(token) && detailGroup.length > 0) {
+				// Inside a live run, prose joins the group instead of ending it.
+				absorbed.push(token);
 			} else {
 				flushDetailGroup();
 				displayTokens.push(token);
@@ -479,6 +506,7 @@
 		<ConsecutiveDetailsGroup
 			id={`${id}-${tokenIdx}-detail-group`}
 			tokens={token.items}
+			absorbed={token.absorbed ?? []}
 			messageDone={done}
 			{compactPreview}
 			{allowEmbeds}

@@ -36,6 +36,10 @@
 	}> = [];
 
 	export let messageDone = true;
+	// Prose that sat between tool calls in this run. It is absorbed here rather than being
+	// left to break the run (which produced a stack of one-call rows), and it is rendered
+	// inside the expanded panel so the narration the model wrote is never lost.
+	export let absorbed: Array<{ type?: string; text?: string }> = [];
 	export let allowEmbeds = false;
 	export let compactPreview = false;
 	export let resolvable = false;
@@ -305,6 +309,21 @@
 
 	{#if open}
 		<div transition:slide={{ duration: 300, easing: quintOut, axis: 'y' }}>
+			{#if absorbed.length > 0}
+				<!-- Narration that sat between the calls in this run, shown in the order it was
+				     written so the run reads as a transcript rather than a bare call list. -->
+				<div class="mb-1.5 space-y-1">
+					{#each absorbed as prose, proseIdx}
+						{#if prose?.text?.trim()}
+							<p
+								class="text-xs text-gray-500 dark:text-gray-400 px-1 whitespace-pre-wrap break-words"
+							>
+								{prose.text.trim()}
+							</p>
+						{/if}
+					{/each}
+				</div>
+			{/if}
 			<div class="mb-1">
 				<slot name="content" />
 			</div>

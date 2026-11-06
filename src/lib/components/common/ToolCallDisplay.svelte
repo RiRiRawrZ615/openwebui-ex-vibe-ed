@@ -228,7 +228,7 @@
 						<XMark className="size-4" strokeWidth="2.5" />
 					</div>
 				{:else if isDone}
-					<div class="text-emerald-500 dark:text-emerald-400">
+					<div class="text-[color:var(--owv-ok)]">
 						<CheckCircle className="size-4" strokeWidth="2" />
 					</div>
 				{:else}
@@ -319,9 +319,9 @@
 									{/each}
 								</div>
 							{:else}
-								<div class="tool-call-body w-full max-w-none!">
+								<div class="tool-call-body w-full max-w-none! min-w-0">
 									<pre
-										class="text-xs text-gray-600 dark:text-gray-300 whitespace-pre font-mono bg-gray-50 dark:bg-gray-900 rounded-lg p-2 overflow-x-auto">{formatJSONString(
+										class="tool-call-pre text-xs text-gray-600 dark:text-gray-300 font-mono bg-gray-50 dark:bg-gray-900 rounded-lg p-2 whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-h-80 overflow-y-auto overflow-x-hidden">{formatJSONString(
 											args
 										)}</pre>
 								</div>
@@ -337,10 +337,10 @@
 							>
 								{$i18n.t('Output')}
 							</div>
-							<div class="w-full max-w-none!">
+							<div class="w-full max-w-none! min-w-0">
 								{#if typeof parsedResult === 'object' && parsedResult !== null}
 									<pre
-										class="text-xs text-gray-600 dark:text-gray-300 whitespace-pre font-mono bg-gray-50 dark:bg-gray-900 rounded-lg p-2 overflow-x-auto">{JSON.stringify(
+										class="tool-call-pre text-xs text-gray-600 dark:text-gray-300 font-mono bg-gray-50 dark:bg-gray-900 rounded-lg p-2 whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-h-80 overflow-y-auto overflow-x-hidden">{JSON.stringify(
 											parsedResult,
 											null,
 											2
@@ -349,7 +349,8 @@
 									{@const resultStr = String(parsedResult)}
 									{@const isTruncated = resultStr.length > RESULT_PREVIEW_LIMIT && !expandedResult}
 									<pre
-										class="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words font-mono">{isTruncated
+										class="tool-call-pre text-xs text-gray-600 dark:text-gray-300 font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-h-80 overflow-y-auto overflow-x-hidden"
+										>{isTruncated
 											? resultStr.slice(0, RESULT_PREVIEW_LIMIT)
 											: resultStr}</pre>
 									{#if isTruncated}

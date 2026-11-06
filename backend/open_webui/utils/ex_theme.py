@@ -53,7 +53,7 @@ BUILTIN_THEMES = ("system", "light", "oled-dark", "her")
 # Each entry is (name, accent, surface, gradient stops, one-line intent). The intent string is
 # what the picker shows, so the list is self-describing rather than a row of bare hex codes.
 THEME_PRESETS = (
-    ("navy", "#24406b", "#12203a", ("#0b1729", "#16304f", "#274a78"),
+    ("navy", "#24406b", "#12203a", ("#0b1729", "#142840", "#1e3350"),
      "deep navy, the default"),
     ("midnight", "#1b2c4d", "#0d1526", ("#070f1c", "#101c33", "#1b2c4d"),
      "near-black blue for dark rooms"),
@@ -70,7 +70,11 @@ THEME_PRESETS = (
 DEFAULT_THEME_SEED = "#24406b"
 DEFAULT_SURFACE = "#12203a"
 DEFAULT_TEXT = "#e6ecf5"
-DEFAULT_GRADIENT = ("#24406b", "#3a6ba5")
+# The far stop used to be #3a6ba5, a saturated cobalt. It was the single brightest thing
+# on screen and it is applied at runtime by this engine, not by src/ex_theme.css, so
+# editing the stylesheet never changed it. Pulled down to a desaturated slate blue: the
+# gradient still reads as a navy wash with a lit corner, without the lit corner shouting.
+DEFAULT_GRADIENT = ("#1b3150", "#27415f")
 ADJUST_CEILING = 60  # slider range, in lightness percent
 ADJUST_DEFAULT = 0
 
