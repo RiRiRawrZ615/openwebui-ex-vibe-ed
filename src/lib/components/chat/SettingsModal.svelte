@@ -402,11 +402,12 @@
 
 	const getAvailableSettings = (personalTabs: SettingsTab[], administratorTabs: SettingsTab[]) => {
 		const personalSettings = personalTabs.filter((tab) => {
-			if (tab.id === 'connections') {
-				// Hidden in this fork: direct connections mean an outbound call to a provider that
-				// bills an external account. Local engines do not need it.
-				return false;
-			}
+			// Connections are NOT hidden. An earlier revision of this fork suppressed them on the
+			// reasoning that local engines do not need outbound providers, which was wrong: a user
+			// can point this instance at a hosted aggregator, and with the tab hidden they cannot
+			// see or fix a provider their own token is spending against. Visibility is not the
+			// same as permission, and hiding a working feature to steer behaviour is not this
+			// fork's call to make.
 
 			if (tab.id === 'tools') {
 				return (
@@ -447,7 +448,7 @@
 		// removed rather than merely disabled, so nobody goes looking for a feature that cannot
 		// work here: the evaluation arena and its Elo leaderboard, and the outbound provider
 		// connections that would bill an external account.
-		const forkHiddenTabs = new Set(['admin:evaluations', 'admin:connections']);
+		const forkHiddenTabs = new Set(['admin:evaluations']);
 
 		return (
 			$user?.role === 'admin' ? [...personalSettings, ...administratorTabs] : personalSettings
