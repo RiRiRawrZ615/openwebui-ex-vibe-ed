@@ -211,3 +211,67 @@ commit 44af293f1, integrity ok).
 - Setup tab under OpenWebVibes settings: install/select llama.cpp, Strata, bonsai binaries.
 - Connections tab does not list existing connections until a prompt is sent.
 - Chat title renders over the top of the window instead of truncating to the corner.
+
+---
+
+## 2026-11-06 · Session 2d: found the REAL render path
+
+### The mistake, stated plainly
+Two sessions of edits went into `MarkdownTokens.svelte`. That file is **not** used for a
+normal chat response. The real chain is:
+
+    ResponseMessage.svelte
+      -> ContentRenderer.svelte
+        -> StructuredOutputRenderer.svelte
+          -> buildOutputDisplayItems()   in Messages/structuredOutput.ts
+
+So every edit to the markdown token path was invisible. Verified by grepping for the
+consumers of `buildOutputDisplayItems`.
+
+Before concluding "cache" a third time, the served bytes were hashed against disk:
+- served `chunks/BuWDkdzi.js` md5 `7cf312e9c5ca` == disk md5 `7cf312e9c5ca`
+- served `/` md5 `f114b9f59efddb3e347dfad5854d0435` == `build/index.html`
+The server was serving the current build. The problem was that the build did not contain the
+intended change, because the change was in the wrong file.
+
+### Now fixed in the correct place
+`buildOutputDisplayItems()` collects every groupable detail token into `hoistedDetailTokens`
+and emits **one** `detail_group` after all message text. `flushDetails()` remains as a named
+no-op so the call sites read unchanged and the inline behaviour is trivially restorable.
+Message body is pure prose; the turn's activity is one collapsible block at the end.
+
+Verified present in the emitted bundle: `build/_app/immutable/chunks/BwIFtHcj.js` contains
+the hoist. Build current relative to `src`.
+
+### Tool-call iteration cap
+`CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS` was never set by the launcher, so it fell back to
+the upstream default. `owv.sh` now passes `${CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS:--1}`
+explicitly, and `-1` is interpreted by `env.py` as uncapped. `bash -n owv.sh` passes.
+Historical note from CHANGELOG: the default was raised 30 -> 256 in one release, then
+256 -> 1024, with `-1` for unlimited.
+
+### Loop guard (reported: fires on refresh / tab-out, spams logs)
+Not yet changed. Located:
+- `backend/open_webui/utils/ex_wiring.py:178 loop_check()`
+- called at `backend/open_webui/utils/middleware.py:5853`, only inside
+  `if ex_settings.get('loopGuard')`, guarded by `try/except` (bare, so a raise is swallowed)
+- thresholds in `ex_loop_guard.py`: `DEFAULT_REPEAT_THRESHOLD = 3`,
+  `DEFAULT_SIMILARITY = 0.65`, `MIN_CONTENT_WORDS = 6`, `REFUSE_ON_OCCURRENCE = 3`
+- `similarity()` is word-set Jaccard over non-stopword tokens, needs >= 6 content words on
+  both sides; `consecutive >= 2` trips a note
+Because `loop_check` runs on `prior_output + output` per iteration, a replayed or partial
+output set can look like repetition. Not yet reproduced, so not yet changed. Deliberately
+left alone rather than guessed at.
+
+### Icons
+All `.ico` files on disk are already the new icon (118528 bytes, converted from the PNG), and
+served `/static/favicon.png` is 244865 bytes, md5 differing from the upstream backup. The
+remaining "old icon" report is the browser tab, which resolves `/favicon.ico` and caches it
+hard.
+
+### Still outstanding (not started)
+- Native builtin tools from `Code/openwebui-tools/repo_snapshot/`
+- Setup tab under OpenWebVibes (llama.cpp / Strata / bonsai install + manual select)
+- Connections tab lists nothing until a prompt is sent
+- Chat title draws over the top of the window instead of truncating
+- Loop guard retuning
