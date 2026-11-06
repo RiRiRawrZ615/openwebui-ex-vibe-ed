@@ -24,9 +24,9 @@ Two facts worth stating plainly:
 	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { getExStatus } from '$lib/apis/ex';
 
-	let applied = '';
-	let themeName = '';
-	let blocked: string[] = [];
+	let applied = $state('');
+	let themeName = $state('');
+	let blocked: string[] = $state([]);
 
 	const apply = () => {
 		const ex = resolveExSettings($settings);
@@ -43,8 +43,11 @@ Two facts worth stating plainly:
 			return;
 		}
 
+		// css_tokens() emits bare declarations, not a rule. Writing them raw into a <style>
+		// tag is invalid CSS and silently does nothing, so the declarations are wrapped in
+		// the :root rule here. This is the wiring bug that made a correct engine look broken.
 		const style = document.getElementById('owv-runtime-theme');
-		if (style) style.textContent = cssTokens(theme);
+		if (style) style.textContent = `:root {\n${cssTokens(theme)}\n}`;
 
 		const wall = wallpaperCss(ex.themeWallpaper);
 		if (wall) document.documentElement.style.setProperty('--owv-wallpaper', wall);

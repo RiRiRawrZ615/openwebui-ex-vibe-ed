@@ -78,6 +78,7 @@
 	import { setTextScale } from '$lib/utils/text-scale';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
+	import OpenWebVibesTheme from '$lib/components/OpenWebVibesTheme.svelte';
 	import SyncStatsModal from '$lib/components/chat/Settings/SyncStatsModal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import MfaManagement from '$lib/components/auth/MfaManagement.svelte';
@@ -1483,6 +1484,8 @@
 		crossorigin="use-credentials"
 	/>
 </svelte:head>
+
+<OpenWebVibesTheme />
 
 <a
 	href="#main-content"

@@ -77,6 +77,8 @@ def classify_model(model_path: str | Path) -> dict:
         manifest = _find_manifest(p)
         if manifest:
             fmt = "strata_pack"
+        elif pack_markers(p):
+            fmt = "strata_pack"
 
     backends = []
     if fmt == "gguf":
@@ -94,9 +96,29 @@ def classify_model(model_path: str | Path) -> dict:
         "format": fmt,
         "exists": p.exists(),
         "prepared": fmt == "strata_pack",
+        "pack_markers": pack_markers(p) if p.is_dir() else [],
         "backends": backends,
         "needs_preparation": fmt in ("safetensors", "unknown") or (fmt == "gguf" and "strata" not in backends),
     }
+
+
+# Files that identify a prepared Strata pack without a manifest. Single source for both sides: the
+# module uses it here, the launcher test asserts the shell rule contains the same names, so the two
+# cannot drift into disagreeing about what a pack is.
+PACK_MARKERS = ("index.txt", "conversions.json")
+
+
+def pack_markers(directory: Path) -> list[str]:
+    """Files that identify a directory as a prepared Strata pack, without a manifest.
+
+    The pack actually on this machine (`Strata-data/packs/iq2_xs`) has no manifest.json. It holds
+    index.txt, conversions.json, native_experts.txt, and a tokenizer directory. That is what a
+    prepared pack looks like in practice, so recognizing those names is grounded in an observed
+    directory, not in a guess. Without this, a pack on disk is classified as unknown, no backend is
+    offered, and a preference for strata is overridden by llama.cpp even though strata is the
+    backend that serves packs.
+    """
+    return [m for m in PACK_MARKERS if (directory / m).is_file()]
 
 
 def _find_manifest(directory: Path) -> dict | None:
@@ -214,6 +236,8 @@ __all__ = [
     "BACKENDS",
     "INSTALLABLE",
     "classify_model",
+    "PACK_MARKERS",
+    "pack_markers",
     "read_profile_index",
     "auto_select",
     "install_plan",

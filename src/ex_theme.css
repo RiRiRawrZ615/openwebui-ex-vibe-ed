@@ -24,9 +24,19 @@
 
 /* Panels and buttons read the same ramp, so windows and buttons stay in the same family.
    Applied only under .owv-themed, so a page without the theme class is unaffected. */
+/* The gradient is painted on html AND body. app.css sets `body { background: #fff }` and
+   `.dark body { background: #171717 }`, so a gradient on html alone is covered by the body
+   box and never reaches the screen. Both surfaces are painted here, with the body rule
+   scoped to .owv-themed so an untinted page is unaffected. */
 .owv-themed {
 	background: var(--owv-gradient);
 	background-attachment: fixed;
+}
+
+.owv-themed body,
+.owv-themed.dark body,
+.owv-themed.light body {
+	background: transparent;
 }
 
 .owv-themed .owv-wallpaper {

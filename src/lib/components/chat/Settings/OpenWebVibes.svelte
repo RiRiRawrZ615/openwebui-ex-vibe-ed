@@ -40,40 +40,40 @@
 
 	const { saveSettings }: { saveSettings: (updated: Record<string, any>) => void | Promise<void> } = $props();
 
-	let ex = resolveExSettings($settings);
-	let status: ExStatusResponse | null = null;
-	let backendCheck: ExBackendCheck | null = null;
-	let plan: ExInstallPlan | null = null;
-	let importReport: ExImportReport | null = null;
+	let ex = $state(resolveExSettings($settings));
+	let status: ExStatusResponse | null = $state(null);
+	let backendCheck: ExBackendCheck | null = $state(null);
+	let plan: ExInstallPlan | null = $state(null);
+	let importReport: ExImportReport | null = $state(null);
 
-	let themeReport: Record<string, any> | null = null;
-	let recoveryReport: Record<string, any> | null = null;
-	let modulesReport: Record<string, any> | null = null;
-	let clusterReport: Record<string, any> | null = null;
-	let contextReport: Record<string, any> | null = null;
-	let steeringReport: Record<string, any> | null = null;
-	let uiReport: Record<string, any> | null = null;
-	let trimReport: Record<string, any> | null = null;
-	let steeringText = '';
-	let pendingSteering = 0;
-	let batchSummary: ExBatchSummary | null = null;
+	let themeReport: Record<string, any> | null = $state(null);
+	let recoveryReport: Record<string, any> | null = $state(null);
+	let modulesReport: Record<string, any> | null = $state(null);
+	let clusterReport: Record<string, any> | null = $state(null);
+	let contextReport: Record<string, any> | null = $state(null);
+	let steeringReport: Record<string, any> | null = $state(null);
+	let uiReport: Record<string, any> | null = $state(null);
+	let trimReport: Record<string, any> | null = $state(null);
+	let steeringText = $state('');
+	let pendingSteering = $state(0);
+	let batchSummary: ExBatchSummary | null = $state(null);
 
-	let batchAction = 'move';
-	let batchIds = '';
-	let batchFolder = '';
-	let batchForce = false;
-	let batching = false;
+	let batchAction = $state('move');
+	let batchIds = $state('');
+	let batchFolder = $state('');
+	let batchForce = $state(false);
+	let batching = $state(false);
 
-	let loading = true;
-	let checkingBackend = false;
-	let planning = false;
-	let importing = false;
+	let loading = $state(true);
+	let checkingBackend = $state(false);
+	let planning = $state(false);
+	let importing = $state(false);
 
-	let modelPath = '';
-	let components = 'webui';
-	let importSource = '';
-	let importTarget = '';
-	let importForce = false;
+	let modelPath = $state('');
+	let components = $state('webui');
+	let importSource = $state('');
+	let importTarget = $state('');
+	let importForce = $state(false);
 
 	// Params the fork can control live under settings.params. Params the launcher wrote
 	// into the handshake are reported, not overridden, because the launcher is what
@@ -159,11 +159,8 @@
 	// Runes mode, matching the rest of this codebase: no legacy reactive labels. The preview is
 	// recomputed when the settings change, so the pairing report always reflects the values the
 	// user actually has, not the values at mount time.
-	let themePreview = buildTheme(ex);
+	let themePreview = $derived(buildTheme(ex));
 
-	$effect(() => {
-		themePreview = buildTheme(ex);
-	});
 
 	const refreshTheme = async () => {
 		const res = await getExTheme(localStorage.token);
