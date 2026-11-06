@@ -169,3 +169,45 @@ artefacts:
 ### Deliberately NOT done
 Server was not restarted, per instruction. The visual changes are not live until
 `kill-owv-dirty` is run. The theme change also needs a restart since it lives in Python.
+
+---
+
+## 2026-11-06 · Session 2c: tool calls moved out of the message body
+
+### Clarified requirement
+Tool calls must not be drawn inline where the assistant's prose is. They belong in one
+separate collapsible surface at the bottom of the message, like the Tasks panel: expandable
+as a whole, with each individual call inspectable.
+
+Earlier attempts only changed *how* inline rows looked. That was the wrong problem. The rows
+were still interleaved with prose, so the message still read as spam regardless of styling.
+
+### Change
+`MarkdownTokens.getDisplayTokens()` now partitions tokens: every groupable detail token is
+collected into one `activity` array and emitted as a **single** `detail_group` appended after
+the prose. Non-detail tokens pass through untouched and in order.
+
+Consequence: the message body is pure prose. All of the turn's tool activity is one
+collapsible block at the end, in original execution order. The absorbed-prose machinery is
+no longer needed for run-splitting and passes an empty array.
+
+### Why it looked broken before this
+`FRONTEND_BUILD_DIR` is `BASE_DIR/'build'` = `Forks/vibe-ed/build/`, which is exactly where
+`npm run build` writes. Verified the running server serves the current build by hashing what
+it returns against disk:
+- served `chunks/BuWDkdzi.js` md5 `7cf312e9c5ca` == disk md5 `7cf312e9c5ca`
+- served `/` md5 `f114b9f59efddb3e347dfad5854d0435` == `build/index.html`
+
+So the server was never stale. Repeated "no change" reports were the browser serving a cached
+bundle. Hard reload / cache bypass is required to see any frontend change.
+
+### Backup taken first
+`~/Documents/AI_Output/Backups/owv-backup-20261106-190011.tar.gz` (716M, 269 chats,
+commit 44af293f1, integrity ok).
+
+### Still outstanding
+- Native builtin tools from `Code/openwebui-tools/repo_snapshot/` (9 exports), with our web
+  search replacing their DuckDuckGo, plus an edit-overlay so a user edit beats the builtin.
+- Setup tab under OpenWebVibes settings: install/select llama.cpp, Strata, bonsai binaries.
+- Connections tab does not list existing connections until a prompt is sent.
+- Chat title renders over the top of the window instead of truncating to the corner.
