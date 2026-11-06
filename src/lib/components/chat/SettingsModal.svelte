@@ -27,6 +27,7 @@
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
 	import OpenWebVibes from './Settings/OpenWebVibes.svelte';
+	import ExSlotHost from '../ex/ExSlotHost.svelte';
 	import Search from '../icons/Search.svelte';
 	import Connections from './Settings/Connections.svelte';
 	import Integrations from './Settings/Integrations.svelte';
@@ -913,11 +914,14 @@
 					}}
 				/>
 			{:else if selectedTab === 'vibes'}
-				<OpenWebVibes
+				<!-- settings_tab is a pluggable slot. The builtin is OpenWebVibes, so a plugin can
+				     replace this tab, and a disabled plugin falls back to the builtin here. Core slots
+				     cannot be replaced, so the modal itself is not routed through the host. -->
+				<ExSlotHost
+					slot="settings_tab"
+					Builtin={OpenWebVibes}
 					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
+					onSave={() => toast.success($i18n.t('Settings saved successfully!'))}
 				/>
 			{:else if selectedTab === 'audio'}
 				<Audio

@@ -1,0 +1,75 @@
+/* OpenWebVibes runtime theme. Fork-owned asset, not an upstream branding file.
+   Generated from backend/open_webui/utils/ex_theme.py (css_tokens). Navy as RiRi chose it.
+   Measured pairs: text on surface 13.67, text on accent 8.53. Accent-on-surface is
+   decorative, so it is not asserted as readable text. */
+
+:root {
+	--owv-accent: #24406b;
+	--owv-surface: #12203a;
+	--owv-text: #e6ecf5;
+	--owv-gradient: linear-gradient(135deg, #24406b, #3a6ba5);
+	--owv-ramp-50: #233d66;
+	--owv-ramp-100: #223b61;
+	--owv-ramp-200: #1f3558;
+	--owv-ramp-300: #1c304e;
+	--owv-ramp-400: #1a2b45;
+	--owv-ramp-500: #18263b;
+	--owv-ramp-600: #152031;
+	--owv-ramp-700: #121b28;
+	--owv-ramp-800: #10161e;
+	--owv-ramp-900: #0e1015;
+	--owv-ramp-950: #0c0e10;
+	--owv-wallpaper: none;
+}
+
+/* Panels and buttons read the same ramp, so windows and buttons stay in the same family.
+   Applied only under .owv-themed, so a page without the theme class is unaffected. */
+.owv-themed {
+	background: var(--owv-gradient);
+	background-attachment: fixed;
+}
+
+.owv-themed .owv-wallpaper {
+	position: fixed;
+	inset: 0;
+	background-image: var(--owv-wallpaper);
+	background-size: cover;
+	background-position: center;
+	opacity: 0.28;
+	pointer-events: none;
+}
+
+.owv-themed .panel,
+.owv-themed .chat-area,
+.owv-themed .sidebar {
+	background: var(--owv-surface);
+	color: var(--owv-text);
+}
+
+.owv-themed .chat-title-bar {
+	background: var(--owv-ramp-100);
+	color: var(--owv-text);
+}
+
+.owv-themed button,
+.owv-themed .user-action {
+	background: var(--owv-ramp-300);
+	color: var(--owv-text);
+}
+
+.owv-themed button:hover,
+.owv-themed .user-action:hover {
+	background: var(--owv-ramp-400);
+}
+
+.owv-themed .primary,
+.owv-themed button.primary {
+	background: var(--owv-accent);
+	color: var(--owv-text);
+}
+
+.owv-themed .settings-panel,
+.owv-themed .modal {
+	background: var(--owv-ramp-200);
+	color: var(--owv-text);
+}

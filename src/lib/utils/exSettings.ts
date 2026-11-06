@@ -16,6 +16,31 @@ export type ExSettings = {
 	backend: string;
 	modelPath: string;
 	allowInstall: boolean;
+	autoRetry: boolean;
+	maxRetries: number;
+	shapeRetries: number;
+	backoffSeconds: number;
+	resumeOnCrash: boolean;
+	exportFallback: boolean;
+	previousContext: boolean;
+	previousContextChars: number;
+	previousContextAsSystem: boolean;
+	steeringQueue: boolean;
+	drainSteeringAtBoundary: boolean;
+	steeringMode: string;
+	uiPlugins: boolean;
+	themeName: string;
+	themeAccent: string;
+	themeSurface: string;
+	themeText: string;
+	themeGradient: string[];
+	themeAdjust: number;
+	themeWallpaper: string;
+	themeIcon: string;
+	workers: Array<Record<string, unknown>>;
+	modules: Record<string, boolean>;
+	trimEnabled: boolean;
+	trim: Record<string, boolean>;
 };
 
 export const EX_DEFAULTS: ExSettings = {
@@ -31,7 +56,32 @@ export const EX_DEFAULTS: ExSettings = {
 	verbatimSummary: false,
 	backend: 'auto',
 	modelPath: '',
-	allowInstall: false
+	allowInstall: false,
+	autoRetry: true,
+	maxRetries: 3,
+	shapeRetries: 1,
+	backoffSeconds: 2.0,
+	resumeOnCrash: true,
+	exportFallback: true,
+	previousContext: true,
+	previousContextChars: 12000,
+	previousContextAsSystem: true,
+	steeringQueue: true,
+	drainSteeringAtBoundary: true,
+	steeringMode: 'next_iteration',
+	uiPlugins: true,
+	themeName: 'navy',
+	themeAccent: '#24406b',
+	themeSurface: '#12203a',
+	themeText: '#e6ecf5',
+	themeGradient: ['#24406b', '#3a6ba5'],
+	themeAdjust: 0,
+	themeWallpaper: '',
+	themeIcon: '',
+	workers: [],
+	modules: {},
+	trimEnabled: true,
+	trim: {}
 };
 
 // Settings save per key, and the settings modal writes the ui block, so an EX tab

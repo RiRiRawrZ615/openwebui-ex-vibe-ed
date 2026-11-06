@@ -96,6 +96,59 @@ export const readExJournal = async (
 	return jsonRequest(`/ex/journal?${params.toString()}`, token);
 };
 
+export type ExThemeResponse = {
+	theme: Record<string, unknown>;
+	css: string;
+};
+
+export const getExTheme = async (token: string): Promise<ExThemeResponse | { error: string }> =>
+	jsonRequest('/ex/theme', token);
+
+export const getExRecovery = async (
+	token: string,
+	chatId = ''
+): Promise<Record<string, any> | { error: string }> => {
+	const params = new URLSearchParams({ chat_id: chatId });
+	return jsonRequest(`/ex/recovery?${params.toString()}`, token);
+};
+
+export const getExModules = async (token: string): Promise<Record<string, any> | { error: string }> =>
+	jsonRequest('/ex/modules', token);
+
+export const getExCluster = async (token: string): Promise<Record<string, any> | { error: string }> =>
+	jsonRequest('/ex/cluster', token);
+
+export type ExBatchSummary = {
+	action: string;
+	selected: number;
+	would_apply: number;
+	refused: string[];
+	blocked: string[];
+	applied?: string[];
+	reason: string;
+	ok: boolean;
+};
+
+export const runExBatch = async (
+	token: string,
+	{
+		action,
+		chatIds,
+		folderId = '',
+		dryRun = true,
+		force = false
+	}: { action: string; chatIds: string[]; folderId?: string; dryRun?: boolean; force?: boolean }
+): Promise<ExBatchSummary | { error: string }> => {
+	const params = new URLSearchParams({
+		action,
+		chat_ids: chatIds.join(','),
+		dry_run: String(dryRun),
+		force: String(force)
+	});
+	if (folderId) params.set('folder_id', folderId);
+	return jsonRequest(`/ex/batch?${params.toString()}`, token, 'POST');
+};
+
 export const runExImport = async (
 	token: string,
 	{
@@ -108,4 +161,77 @@ export const runExImport = async (
 	const params = new URLSearchParams({ source, dry_run: String(dryRun), force: String(force) });
 	if (target) params.set('target', target);
 	return jsonRequest(`/ex/import?${params.toString()}`, token, 'POST');
+};
+
+export type ExContextReport = {
+	settings: Record<string, unknown>;
+	stored_path: string;
+};
+
+export type ExSteeringReport = {
+	settings: Record<string, unknown>;
+	items: Array<Record<string, unknown>>;
+};
+
+export type ExUiReport = {
+	settings: Record<string, unknown>;
+	resolved: {
+		slots: Array<{
+			slot: string;
+			plugin: string;
+			component: string;
+			fallback: string;
+			resolved: string;
+			state: string;
+		}>;
+		refused: Array<Record<string, unknown>>;
+		plugin_root: string;
+		core_slots: string[];
+		counts: Record<string, number>;
+		host_note: string;
+	};
+};
+
+export const getExContext = async (token: string, chatId = ''): Promise<ExContextReport | { error: string }> => {
+	const params = new URLSearchParams({ chat_id: chatId });
+	return jsonRequest(`/ex/context?${params.toString()}`, token);
+};
+
+export const getExSteering = async (token: string, chatId = ''): Promise<ExSteeringReport | { error: string }> => {
+	const params = new URLSearchParams({ chat_id: chatId });
+	return jsonRequest(`/ex/steering?${params.toString()}`, token);
+};
+
+export const addExSteering = async (
+	token: string,
+	{
+		text,
+		chatId = '',
+		mode = 'next_iteration',
+		action = 'inject_instruction',
+		tool = '',
+		priority = 'normal'
+	}: { text: string; chatId?: string; mode?: string; action?: string; tool?: string; priority?: string }
+): Promise<{ item: Record<string, unknown>; pending: number } | { error: string }> => {
+	const params = new URLSearchParams({
+		text,
+		chat_id: chatId,
+		mode,
+		action,
+		tool,
+		priority
+	});
+	return jsonRequest(`/ex/steering?${params.toString()}`, token, 'POST');
+};
+
+export const getExUi = async (token: string): Promise<ExUiReport | { error: string }> => {
+	return jsonRequest('/ex/ui', token);
+};
+export type ExTrimReport = {
+	settings: Record<string, unknown>;
+	resolved: { gate: Record<string, boolean>; refused_overrides: Array<Record<string, unknown>> };
+};
+
+export const getExTrim = async (token: string): Promise<ExTrimReport | { error: string }> => {
+	return jsonRequest('/ex/trim', token);
 };

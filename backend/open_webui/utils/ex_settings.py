@@ -30,6 +30,46 @@ DEFAULTS = {
     "backend": "auto",           # auto | llamacpp | strata
     "modelPath": "",             # optional override for the model check
     "allowInstall": False,       # plan is dry-run unless the user turns this on
+    # Agentic continuation. Two counters, kept separate because they mean different things:
+    # transport retries can be a repeat of the same request, shape retries cannot.
+    "autoRetry": True,
+    "maxRetries": 3,
+    "shapeRetries": 1,
+    "backoffSeconds": 2.0,
+    "resumeOnCrash": True,
+    "exportFallback": True,
+    # Previous context as a verbatim export. A model paraphrase is what loses the facts, so the
+    # block is built from the stored messages themselves, newest wins, nothing rewritten.
+    "previousContext": True,
+    "previousContextChars": 12000,
+    "previousContextAsSystem": True,
+    # Mid generation steering. The stock queue waits for generation to finish, so it is
+    # send_after. The redirect form is injection at the next iteration boundary.
+    "steeringQueue": True,
+    "drainSteeringAtBoundary": True,
+    "steeringMode": "next_iteration",
+    # Modularity. A slot falls back to the builtin component when its plugin is off, so a plugin
+    # cannot break the host.
+    "uiPlugins": True,
+    # Themes. Navy as RiRi chose it; cobalt read as too bright.
+    "themeName": "navy",
+    "themeAccent": "#24406b",
+    "themeSurface": "#12203a",
+    "themeText": "#e6ecf5",
+    "themeGradient": ["#24406b", "#3a6ba5"],
+    "themeAdjust": 0,
+    "themeWallpaper": "",
+    "themeIcon": "",
+    # Compute layer. A worker record is what the worker advertised, so this is an empty list
+    # by default; nothing here assumes a device exists or claims a capacity.
+    "workers": [],
+    # Module registry. Empty means every non-core module is on; a dict here is a per-module
+    # override, and a core override is refused by the registry rather than applied.
+    "modules": {},
+    # Feature trim. A gate, per user, so nothing here deletes files from the tree.
+    "trimEnabled": True,
+    "trim": {},
+
 }
 
 

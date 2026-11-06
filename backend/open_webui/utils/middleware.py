@@ -93,7 +93,9 @@ from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
-from open_webui.utils.ex_wiring import journal_window, loop_check
+from open_webui.utils.ex_trim import gate_features
+from open_webui.utils.ex_wiring import drain_steering, journal_window, loop_check, read_previous_context, retry_call
+from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
 from open_webui.utils.files import (
     convert_markdown_base64_images,
     get_file_url_from_base64,
@@ -2254,6 +2256,24 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except Exception:
             log.exception('EX journal window failed; continuing with full history')
 
+    # EX previous context. A pasted or stored export block goes at the head of the messages,
+    # verbatim, newest wins. Strictly better than a model paraphrase because nothing is
+    # interpreted on the way in. The cost is stated plainly: a block at the message head
+    # invalidates the byte identical prefix llama.cpp reuses, so this forces a re-prefill.
+    ex_previous_context = None
+    if ex_settings['enabled'] and ex_settings.get('previousContext'):
+        try:
+            ex_previous_context = read_previous_context(DATA_DIR, metadata.get('chat_id', ''), ex_settings)
+            if ex_previous_context:
+                if not ex_settings.get('previousContextAsSystem'):
+                    # Delivered as a user message so it reads as an instruction from RiRi rather
+                    # than as system framing.
+                    ex_previous_context['role'] = 'user'
+                form_data['messages'] = [ex_previous_context] + form_data.get('messages', [])
+            metadata['exPreviousContext'] = ex_previous_context
+        except Exception:
+            log.exception('EX previous context read failed; continuing with the chat as stored')
+
     form_data['messages'] = process_messages_with_output(
         form_data.get('messages', []),
         reasoning_format=get_reasoning_format(model),
@@ -2402,6 +2422,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             raise Exception(f'{e}')
 
     features = form_data.pop('features', None) or {}
+    # EX feature trim. Applied where the feature block is already read, so the gate reaches
+    # the code that decides features. A gate that only reports is decoration.
+    ex_trim_gate = {}
+    if ex_settings.get('trimEnabled') and features:
+        try:
+            ex_trim_gate = gate_features(features, ex_settings)
+            if ex_trim_gate['dropped']:
+                features = ex_trim_gate['features']
+                metadata['exTrimmedFeatures'] = ex_trim_gate['dropped']
+        except Exception as e:
+            # A gate failure must not change the request. Report it, then use the block as given.
+            metadata['exTrimError'] = f'{type(e).__name__}: {e}'
+
     extra_params['__features__'] = features
     if features:
         if 'voice' in features and features['voice']:
@@ -5731,11 +5764,68 @@ async def streaming_chat_response_handler(response, ctx):
                             log.exception('EX loop guard check failed; continuing without steering')
 
                     # Resolve dispatch before approvals and special handling such as ask_user.
+                    # EX steering drain. A message typed during generation cannot enter a half
+                    # finished thought, so it lands here, at the boundary where the tool loop
+                    # already rebuilds messages. The loop guard ran first, so a steering item goes
+                    # after it and outranks a detected loop for the next request.
+                    ex_steering = {}
+                    if ex_settings.get('steeringQueue') and ex_settings.get('drainSteeringAtBoundary'):
+                        try:
+                            ex_steering = drain_steering(
+                                messages,
+                                metadata.get('chat_id', ''),
+                                ex_settings,
+                                DATA_DIR,
+                                turn_open=True,
+                            )
+                            if ex_steering.get('applied') and event_emitter:
+                                await event_emitter(
+                                    {
+                                        'type': 'status',
+                                        'data': {
+                                            'action': 'ex_steering',
+                                            'description': f"injected {len(ex_steering['applied'])} steering message(s) before the next request",
+                                            'done': True,
+                                        },
+                                    }
+                                )
+                            if ex_steering.get('stop_turn'):
+                                log.info('EX steering: turn ended by steering request')
+                                break
+                        except Exception:
+                            log.exception('EX steering drain failed; continuing without steering')
+
+                    # An attempt that streamed nothing can be replayed. An attempt that already
+                    # streamed items cannot, because a replay would append the same text twice.
+                    # Items appended after this index belong to this attempt. The partial output
+                    # rule needs a measured value, not a constant; a hardcoded False would let a
+                    # replay duplicate text that already streamed.
+                    ex_attempt_output_start = len(output)
+                    ex_attempt_streamed = False
+                    ex_batch = tool_calls.pop(0) if tool_calls else []
+
+                    if ex_steering.get('refuse_next_call'):
+                        for tool_call in ex_batch:
+                            output.append(
+                                {
+                                    'type': 'function_call_output',
+                                    'id': output_id('fco'),
+                                    'call_id': tool_call.get('id') or output_id('fc'),
+                                    'output': [{'type': 'input_text', 'text': 'Refused by steering request before execution.'}],
+                                    'status': 'refused',
+                                }
+                            )
+                        continue
+
+                    if ex_steering.get('swap_next_tool') and ex_batch:
+                        ex_batch[0].setdefault('function', {})['name'] = ex_steering['swap_next_tool']
+                        log.info('EX steering: next call swapped to %s', ex_steering['swap_next_tool'])
+
                     response_tool_calls = []
                     output_by_call_id = {
                         item.get('call_id'): item for item in output if item.get('type') == 'function_call'
                     }
-                    for tool_call in tool_calls.pop(0):
+                    for tool_call in ex_batch:
                         error = resolve_tool_call(tool_call, metadata.get('tools', {}))
                         call_id = tool_call.get('id') or output_id('fc')
                         tool_call['id'] = call_id
@@ -6158,11 +6248,18 @@ async def streaming_chat_response_handler(response, ctx):
 
                         new_form_data = normalize_messages_for_model(new_form_data)
 
-                        res = await generate_chat_completion(
-                            request,
-                            new_form_data,
-                            user,
-                            bypass_system_prompt=True,
+                        # EX auto retry. Transport failures only, and only when nothing has
+                        # streamed for this attempt. The decision is the same policy the settings
+                        # tab reports; the partial output rule is enforced in the adapter.
+                        res = await retry_call(
+                            lambda: generate_chat_completion(
+                                request,
+                                new_form_data,
+                                user,
+                                bypass_system_prompt=True,
+                            ),
+                            ex_settings,
+                            streamed=ex_attempt_streamed,
                         )
 
                         if isinstance(res, StreamingResponse):
@@ -6194,6 +6291,46 @@ async def streaming_chat_response_handler(response, ctx):
                         error_content = get_message_error_content(e)
                         log.exception('Tool-call continuation failed: %s', error_content)
                         await emit_message_error(error_content)
+
+                        # EX recovery. The decision is made by the pure module, so the policy
+                        # is the same one the settings tab reports. Only the cursor is recorded
+                        # here; nothing re-runs the request from inside the request path.
+                        if ex_settings.get('resumeOnCrash') and metadata.get('chat_id'):
+                            try:
+                                ex_attempt_streamed = len(output) > ex_attempt_output_start
+                                verdict = decide(
+                                    e,
+                                    attempt=tool_call_iterations,
+                                    max_retries=ex_settings.get('maxRetries', 3),
+                                    shape_retries=ex_settings.get('shapeRetries', 1),
+                                    base_backoff=ex_settings.get('backoffSeconds', 2.0),
+                                )
+                                write_checkpoint(
+                                    DATA_DIR,
+                                    {
+                                        'chat_id': metadata.get('chat_id'),
+                                        'cursor': tool_call_iterations,
+                                        'done': [item.get('id') for item in prior_output if item.get('id')],
+                                        'pending': [call.get('id') for call in tool_calls if call.get('id')],
+                                        'last_error': error_content,
+                                        'class': verdict.get('class'),
+                                        'retry_permitted': retry_permitted(verdict, partial_output=ex_attempt_streamed),
+                                    },
+                                )
+                                if event_emitter:
+                                    await event_emitter(
+                                        {
+                                            'type': 'status',
+                                            'data': {
+                                                'action': 'ex_recovery',
+                                                'description': f"{verdict.get('action')}: {verdict.get('reason')}",
+                                                'done': True,
+                                            },
+                                        }
+                                    )
+                            except Exception:
+                                log.exception('EX recovery checkpoint failed; the turn still ends normally')
+
                         break
 
                 if (
