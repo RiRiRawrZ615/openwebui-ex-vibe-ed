@@ -17,6 +17,7 @@
 	import UserSettingRow from './UserSettingRow.svelte';
 	import UserSettingSection from './UserSettingSection.svelte';
 	import SettingsSelect from '$lib/components/common/SettingsSelect.svelte';
+	import { applyOwvRamp, owvThemeActive } from '$lib/utils/exPalette';
 	export let saveSettings: Function;
 	export let getModels: Function;
 
@@ -153,10 +154,12 @@
 		}
 
 		if (themeToApply === 'dark' && !_theme.includes('oled')) {
-			document.documentElement.style.setProperty('--color-gray-800', '#333');
-			document.documentElement.style.setProperty('--color-gray-850', '#262626');
-			document.documentElement.style.setProperty('--color-gray-900', '#171717');
-			document.documentElement.style.setProperty('--color-gray-950', '#0d0d0d');
+			// Handed to the palette module instead of written here. The stock code stamps
+			// near-black hex inline, and inline custom properties beat every stylesheet, so a
+			// black stamp at this point is what silently re-blacked the app after boot no
+			// matter what ex_theme.css said. When the runtime theme is off this is a no-op and
+			// the tokens stay stock.
+			if (owvThemeActive()) applyOwvRamp();
 		}
 
 		themes
@@ -178,13 +181,13 @@
 					? 'dark'
 					: 'light';
 				console.log('Setting system meta theme color: ' + systemTheme);
-				metaThemeColor.setAttribute('content', systemTheme === 'light' ? '#ffffff' : '#171717');
+				metaThemeColor.setAttribute('content', systemTheme === 'light' ? '#ffffff' : '#0b1729');
 			} else {
 				console.log('Setting meta theme color: ' + _theme);
 				metaThemeColor.setAttribute(
 					'content',
 					_theme === 'dark'
-						? '#171717'
+						? '#0b1729'
 						: _theme === 'oled-dark'
 							? '#000000'
 							: _theme === 'her'

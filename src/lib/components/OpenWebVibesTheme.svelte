@@ -8,13 +8,22 @@ It does not invent values. It calls the mirror of the tested engine, and it only
 the engine reported as ready. A theme with a failing text pairing is not applied, and the component
 says why, because a theme that ships unreadable text is not a theme.
 
-Two facts worth stating plainly:
-  - the static file src/ex_theme.css holds the shipped default. This component overrides those
-    tokens at runtime from the user's settings, so a change in the settings tab changes the page
-    without a rebuild.
-  - wallpaper paths are validated on the server against the allowed roots. The mirror cannot do
-    that, so a local path is not applied here; only a remote URL is. The engine's decision comes
-    from the API, and this component applies that decision, not its own guess.
+Three facts worth stating plainly, because each one was a real failure:
+
+  1. The visible problem was never the gradient. It was the surfaces. Every panel is Tailwind
+     `dark:bg-gray-900`, which resolves to `--color-gray-900`, and two separate places stamped
+     that token with near-black hex *inline*. Inline custom properties beat every stylesheet,
+     so no rule in src/ex_theme.css could win. The ramp is written from here instead, which is
+     the only writer left standing.
+
+  2. src/app.html runs before Svelte exists. It cannot call this component, so it reads a
+     localStorage flag instead and writes the same hex ramp itself. That is what stops a flash
+     of stock dark on load. The two writers must agree; the constants live in exPalette.ts and
+     app.html carries a literal copy because it cannot import a module.
+
+  3. Wallpaper paths are validated on the server against the allowed roots. The mirror cannot
+     do that, so a local path is not applied here; only a remote URL is. The engine's decision
+     comes from the API, and this component applies that decision, not its own guess.
 -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
@@ -22,11 +31,29 @@ Two facts worth stating plainly:
 	import { settings } from '$lib/stores';
 	import { buildTheme, cssTokens, wallpaperCss } from '$lib/utils/exTheme';
 	import { resolveExSettings } from '$lib/utils/exSettings';
+	import { applyOwvRamp, releaseOwvRamp, OWV_GRADIENT_HEX } from '$lib/utils/exPalette';
 	import { getExStatus } from '$lib/apis/ex';
 
 	let applied = $state('');
 	let themeName = $state('');
 	let blocked: string[] = $state([]);
+
+	/** Persisted so the pre-hydration script in app.html can paint navy on the next load. */
+	const flagOn = () => {
+		try {
+			localStorage.setItem('owvTheme', 'on');
+		} catch {
+			/* private mode; the boot script just falls back to its own default */
+		}
+	};
+
+	const flagOff = () => {
+		try {
+			localStorage.setItem('owvTheme', 'off');
+		} catch {
+			/* same */
+		}
+	};
 
 	const apply = () => {
 		const ex = resolveExSettings($settings);
@@ -40,6 +67,8 @@ Two facts worth stating plainly:
 			// not silently half-rendered.
 			applied = '';
 			document.documentElement.classList.remove('owv-themed');
+			releaseOwvRamp();
+			flagOff();
 			return;
 		}
 
@@ -49,11 +78,27 @@ Two facts worth stating plainly:
 		const style = document.getElementById('owv-runtime-theme');
 		if (style) style.textContent = `:root {\n${cssTokens(theme)}\n}`;
 
+		// The ramp is the part that actually changes what is on screen. Written after the
+		// token sheet so a stale inline value from the boot script cannot survive.
+		applyOwvRamp();
+
+		// Gradient double-write. The stylesheet already declares it on .owv-themed, but a
+		// user-supplied accent or gradient from the settings tab would need a per-user value,
+		// and the token sheet above only carries the engine's default. Writing it here keeps
+		// the user's gradient authoritative without needing a rebuild.
+		const stops = (ex.themeGradient ?? []).filter(Boolean);
+		const gradient =
+			stops.length >= 2
+				? `linear-gradient(160deg, ${stops[0]} 0%, ${stops[1]} 100%)`
+				: OWV_GRADIENT_HEX;
+		document.documentElement.style.setProperty('--owv-gradient', gradient);
+
 		const wall = wallpaperCss(ex.themeWallpaper);
 		if (wall) document.documentElement.style.setProperty('--owv-wallpaper', wall);
 		else document.documentElement.style.removeProperty('--owv-wallpaper');
 
 		document.documentElement.classList.add('owv-themed');
+		flagOn();
 		applied = cssTokens(theme);
 	};
 
@@ -83,6 +128,8 @@ Two facts worth stating plainly:
 
 	onDestroy(() => {
 		document.documentElement.classList.remove('owv-themed');
+		document.documentElement.style.removeProperty('--owv-gradient');
+		releaseOwvRamp();
 	});
 </script>
 

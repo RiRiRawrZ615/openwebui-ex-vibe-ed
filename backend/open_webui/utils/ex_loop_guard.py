@@ -45,6 +45,19 @@ DEFAULT_REPEAT_THRESHOLD = 3
 DEFAULT_SIMILARITY = 0.65
 MIN_CONTENT_WORDS = 6
 
+# A tool call is refused on its THIRD identical appearance, not its fourth.
+#
+# The threshold above counts repeats of a signature across the turn. That was the wrong unit:
+# a call that appears three times total has been repeated twice, and by then the turn has
+# spent two full generations producing a result the model already had. Refusing on the third
+# sighting means the model gets one honest retry and a second chance to change approach, and
+# the third attempt never runs. That matches what RiRi asked for and what the note says.
+REFUSE_ON_OCCURRENCE = 3
+
+# How many consecutive identical errors, arriving faster than the backoff window, mean the
+# turn is not going to recover. Three instant failures is a broken request, not a slow one.
+MAX_INSTANT_ERRORS = 3
+
 
 def normalise_args(args: Any) -> str:
     """Canonical form of tool arguments so key order and spacing cannot hide a repeat."""
@@ -83,6 +96,47 @@ def similarity(a: str, b: str) -> float:
     inter = len(sa & sb)
     union = len(sa | sb)
     return inter / union if union else 0.0
+
+
+def repeat_index(output_items: list[dict]) -> dict:
+    """Map each call signature to the arithmetic index of the next identical call.
+
+    The loop body needs to ask a different question than scan() answers: not "has this been
+    repeated too often" (an after-the-fact count) but "if I ran the call I am about to run,
+    how many times would that be in total". Refusing on total occurrence is what makes the
+    third identical attempt fail instead of running and then being reported.
+
+    Returns {signature: count_so_far}. The caller adds one for the call it is about to make.
+    """
+    counts: dict[str, int] = {}
+    for item in output_items:
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            sig = call_signature(item.get("name", ""), item.get("arguments", ""))
+            counts[sig] = counts.get(sig, 0) + 1
+    return counts
+
+
+def would_repeat(output_items: list[dict], name: str, arguments: Any,
+                 threshold: int = REFUSE_ON_OCCURRENCE) -> bool:
+    """True when running this call would be the `threshold`-th identical attempt.
+
+    A call with empty arguments is never refused: several tools take no arguments at all
+    (listing a directory, reading a clock), and calling one of those repeatedly is normal
+    behaviour rather than a loop.
+    """
+    if not str(arguments or "").strip() or str(arguments).strip() in ("{}", "null", "None"):
+        return False
+    sig = call_signature(name, arguments)
+    return repeat_index(output_items).get(sig, 0) + 1 >= threshold
+
+
+def refused_call_note(name: str) -> str:
+    """What the model is told instead of a result. Deterministic, so it cannot drift."""
+    return (
+        f"[loop guard] This exact call to {name} has already run twice and returned nothing "
+        f"new. It was not executed. Change the arguments, choose a different tool, or state "
+        f"what is blocked and end the turn."
+    )
 
 
 def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THRESHOLD,

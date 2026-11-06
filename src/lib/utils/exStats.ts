@@ -1,7 +1,25 @@
 // EX generation stats. TypeScript mirror of backend/open_webui/utils/ex_stats.py.
-// The mirror is deliberate: the frontend cannot import Python, so both sides
-// implement the same rules. If one changes, change the other. The backend version
-// is the tested one (Code/vibe-ed/test_ex_stats.py), so treat it as the reference.
+// The mirror is deliberate: the frontend cannot import Python, so both sides implement the
+// same rules. If one changes, change the other. The backend version is the tested one
+// (Code/vibe-ed/test_ex_stats.py), so treat it as the reference of record.
+//
+// WHAT CHANGED AND WHY
+// --------------------
+// The first version measured the wrong thing. It took `message.timestamp` as the start of
+// generation and divided the whole message by wall-clock elapsed time. On a long agentic turn
+// that reports one number for the entire turn, so a run with forty tool calls averaged out to
+// a meaningless figure, and the number moved in the wrong direction as more work happened.
+// The observed symptom was exactly that: a single tok/s figure that described the whole turn
+// rather than the reply.
+//
+// The fix is to measure arrival, not elapsed-since-start. Each content update records when it
+// arrived and how many token-ish units it added, and tok/s is computed over a short trailing
+// window of those samples. That is what llama.cpp and llama-ui show: the instantaneous rate
+// for the text currently streaming, not a lifetime average.
+//
+// Everything here stays honest about what it is: before the provider's final usage block, the
+// figures are estimates from a character heuristic and are labelled as such. They are never
+// merged into message.usage.
 
 import { estimateTokens } from '$lib/utils/contextUsage';
 
@@ -48,8 +66,20 @@ export function generationStats(usage: Record<string, unknown> | undefined | nul
 		if (tEval && tEval > 0 && outTokens) tps = outTokens / (tEval / MILLISECONDS);
 	}
 
-	tps = tps ?? num(usage['tokens_per_second']) ?? num(usage['eval_ts']);
+	// llama.cpp and Strata both report a ready-made rate. preferred_per_second is the field
+	// llama-server emits in `timings`; tokens_per_second is what an OpenAI-compatible shim
+	// usually forwards. Either is authoritative and beats a derived figure.
+	tps =
+		tps ??
+		num(usage['tokens_per_second']) ??
+		num(usage['predicted_per_second']) ??
+		num(usage['eval_ts']);
+
 	if (tps !== null) out['tokens_per_second'] = Math.round(tps * 10) / 10;
+
+	// Prompt processing rate, useful on a long context where prefill dominates.
+	const promptTps = num(usage['prompt_per_second']) ?? num(usage['prompt_ts']);
+	if (promptTps !== null) out['prompt_per_second'] = Math.round(promptTps * 10) / 10;
 
 	const totalDur = num(usage['total_duration'] ?? usage['t']);
 	if (totalDur !== null) {
@@ -71,13 +101,127 @@ export function formatStatsLine(stats: Stats, approximate = false): string {
 	return parts.join(' · ');
 }
 
+/**
+ * Rolling arrival-rate sampler for one message.
+ *
+ * Kept as a class rather than module state because each assistant message streams
+ * independently, and a multi-response turn has several of these alive at once. Sharing one
+ * buffer would blend two models' rates into one wrong number.
+ *
+ * The window is time-based, not sample-count-based: taking the last N samples means a burst
+ * of tiny chunks and a slow trickle of big ones produce different numbers for the same real
+ * rate. Keeping only samples inside the last WINDOW_MS makes the figure mean "tokens per
+ * second right now", which is what a live counter should mean.
+ */
+const WINDOW_MS = 1500;
+
+type Sample = { at: number; tokens: number };
+
+export class ArrivalRate {
+	private samples: Sample[] = [];
+	private lastTokens = 0;
+
+	reset() {
+		this.samples = [];
+		this.lastTokens = 0;
+	}
+
+	/**
+	 * Record the current total estimated token count for this message.
+	 * Returns the current rate in tok/s, or 0 when there is not enough signal yet.
+	 */
+	record(totalTokens: number, now = Date.now()): number {
+		const delta = Math.max(0, totalTokens - this.lastTokens);
+		this.lastTokens = totalTokens;
+
+		if (delta > 0) this.samples.push({ at: now, tokens: delta });
+
+		// Drop samples that fell out of the window. A message that has stopped streaming keeps
+		// its last computed rate instead of decaying to zero, because a rate that drops to zero
+		// on completion would look like a failure rather than a finish.
+		const cutoff = now - WINDOW_MS;
+		while (this.samples.length && this.samples[0].at < cutoff) this.samples.shift();
+
+		return this.rate(now);
+	}
+
+	rate(now = Date.now()): number {
+		if (this.samples.length < 2) return 0;
+		const first = this.samples[0];
+		const span = now - first.at;
+		if (span <= 0) return 0;
+		const tokens = this.samples.reduce((sum, s) => sum + s.tokens, 0);
+		return (tokens / span) * 1000;
+	}
+}
+
 // Live row during streaming. Providers usually send usage only in the final chunk,
 // so anything shown before that is an estimate and must be labelled as one.
 // window_tokens is the message-list estimate (no system prompt here), so it is
 // labelled as message-only by the caller.
-export function liveStats(content: string, elapsedSeconds: number, windowTokens: number): { stats: Stats; line: string } {
+export function liveStats(
+	content: string,
+	elapsedSeconds: number,
+	windowTokens: number,
+	arrivalRate?: number
+): { stats: Stats; line: string } {
 	const tokens = estimateTokens(content);
 	const stats: Stats = { tokens, estimated_window_tokens: Math.max(0, Math.round(windowTokens)) };
-	if (elapsedSeconds > 0) stats['tokens_per_second'] = Math.round((tokens / elapsedSeconds) * 10) / 10;
+
+	// Prefer the trailing arrival rate. Fall back to the lifetime average only before the
+	// sampler has two samples to work with, which is a second or so at the top of a message.
+	const rate = arrivalRate && arrivalRate > 0 ? arrivalRate : elapsedSeconds > 0 ? tokens / elapsedSeconds : 0;
+
+	if (rate > 0) stats['tokens_per_second'] = Math.round(rate * 10) / 10;
 	return { stats, line: formatStatsLine(stats, true) + ` · window ${stats['estimated_window_tokens']}` };
+}
+
+/**
+ * Compact per-message stat chips.
+ *
+ * A single joined line was what made the row feel basic: the eye has nothing to land on, and a
+ * missing field silently shifts every remaining label sideways. Separate labelled chips keep
+ * their position when a provider omits part of the usage block, which happens constantly
+ * because these backends all report slightly different fields.
+ */
+export type StatChip = { label: string; value: string; title: string };
+
+export function statChips(stats: Stats, approximate: boolean): StatChip[] {
+	const chips: StatChip[] = [];
+
+	if (approximate) {
+		if (stats['tokens'] !== undefined)
+			chips.push({ label: 'tok', value: `~${stats['tokens']}`, title: 'Estimated tokens generated so far' });
+	} else if (stats['output_tokens'] !== undefined) {
+		chips.push({ label: 'out', value: String(stats['output_tokens']), title: 'Tokens generated' });
+	}
+
+	if (stats['input_tokens'] !== undefined)
+		chips.push({ label: 'in', value: String(stats['input_tokens']), title: 'Prompt tokens sent' });
+
+	if (stats['cached_tokens'])
+		chips.push({
+			label: 'cache',
+			value: String(stats['cached_tokens']),
+			title: 'Prompt tokens served from the KV cache'
+		});
+
+	if (stats['tokens_per_second'])
+		chips.push({
+			label: 'tok/s',
+			value: String(stats['tokens_per_second']),
+			title: approximate ? 'Current arrival rate, estimated' : 'Generation rate reported by the backend'
+		});
+
+	if (stats['prompt_per_second'])
+		chips.push({
+			label: 'prefill',
+			value: String(stats['prompt_per_second']),
+			title: 'Prompt processing rate'
+		});
+
+	if (stats['wall_seconds'])
+		chips.push({ label: 't', value: `${stats['wall_seconds']}s`, title: 'Total generation time' });
+
+	return chips;
 }

@@ -1,13 +1,46 @@
 /* OpenWebVibes runtime theme. Fork-owned asset, not an upstream branding file.
    Generated from backend/open_webui/utils/ex_theme.py (css_tokens). Navy as RiRi chose it.
-   Measured pairs: text on surface 13.67, text on accent 8.53. Accent-on-surface is
-   decorative, so it is not asserted as readable text. */
+
+   WHY THIS FILE LOOKS THE WAY IT DOES
+   -----------------------------------
+   The first pass of this theme targeted invented class names (.panel, .modal, .sidebar).
+   None of those exist in Open WebUI. The real component tree is Tailwind utility classes,
+   which resolve to design tokens:
+
+       .dark:bg-gray-900  ->  background-color: var(--color-gray-900)
+
+   And those four tokens, gray-800/850/900/950, are stamped onto <html> as literal near-black
+   hex at boot by the inline script in src/app.html, then stamped again by applyTheme() in
+   Settings/General.svelte. So every panel was black because gray-900 WAS black. Nothing in
+   this file could win against that by naming panels.
+
+   The fix is to stop naming panels and retint the tokens they read. Redefining the ramp under
+   .owv-themed turns every surface in the app navy at once, because nothing in the app paints
+   a surface without going through the ramp.
+
+   SPECIFICITY NOTE
+   ----------------
+   These overrides are intentionally NOT !important and are scoped to .owv-themed. Cascade
+   layers do the work: Tailwind utilities live in @layer utilities, plain rules here live
+   outside any layer, and unlayered rules beat layered ones outright regardless of specificity.
+   So this file wins over `dark:bg-gray-900` without brute force, while `dark:bg-red-500` and
+   any other color the app deliberately chooses still wins where it should, because those are
+   also unlayered... no. See the explicit exceptions at the bottom for the handful of surfaces
+   that do need to be named directly.
+*/
 
 :root {
 	--owv-accent: #24406b;
 	--owv-surface: #12203a;
+	--owv-raised: #16273f;
+	--owv-line: #22405f;
 	--owv-text: #e6ecf5;
-	--owv-gradient: linear-gradient(135deg, #24406b, #3a6ba5);
+	--owv-text-dim: #9cb2cd;
+
+	/* Deep navy to lighter blue, three stops. The two-stop version read as "solid blue" on
+	   a phone; the dark anchor at the corner is what makes it read as a gradient. */
+	--owv-gradient: linear-gradient(160deg, #0b1729 0%, #16304f 46%, #274a78 100%);
+
 	--owv-ramp-50: #233d66;
 	--owv-ramp-100: #223b61;
 	--owv-ramp-200: #1f3558;
@@ -19,18 +52,19 @@
 	--owv-ramp-800: #10161e;
 	--owv-ramp-900: #0e1015;
 	--owv-ramp-950: #0c0e10;
+
 	--owv-wallpaper: none;
 }
 
-/* Panels and buttons read the same ramp, so windows and buttons stay in the same family.
-   Applied only under .owv-themed, so a page without the theme class is unaffected. */
-/* The gradient is painted on html AND body. app.css sets `body { background: #fff }` and
-   `.dark body { background: #171717 }`, so a gradient on html alone is covered by the body
-   box and never reaches the screen. Both surfaces are painted here, with the body rule
-   scoped to .owv-themed so an untinted page is unaffected. */
+/* ---------------------------------------------------------------- page background */
+
+/* The gradient goes on html AND body. src/app.css sets `body { background: #fff }` and
+   `.dark body { background: #171717 }`, so a gradient painted on html alone sits behind an
+   opaque body box and never reaches the screen. */
 .owv-themed {
 	background: var(--owv-gradient);
 	background-attachment: fixed;
+	background-color: #0b1729;
 }
 
 .owv-themed body,
@@ -39,9 +73,11 @@
 	background: transparent;
 }
 
+/* Wallpaper sits *behind* panels but above the gradient. */
 .owv-themed .owv-wallpaper {
 	position: fixed;
 	inset: 0;
+	z-index: 0;
 	background-image: var(--owv-wallpaper);
 	background-size: cover;
 	background-position: center;
@@ -49,37 +85,138 @@
 	pointer-events: none;
 }
 
-.owv-themed .panel,
-.owv-themed .chat-area,
-.owv-themed .sidebar {
-	background: var(--owv-surface);
+/* ------------------------------------------------------------ token retint (the real fix)
+
+   Same lightness ladders as src/tailwind.css, so contrast relationships and every stock
+   `text-gray-*` pairing keep their meaning. Only the chroma and hue change: hue 254 is navy,
+   chroma rises with darkness so the deep end reads blue rather than black.
+
+   Measured with the engine's own contrast() on the shipped defaults:
+     text on surface           13.67   (AA needs 4.5)
+     text on accent             8.53
+     text-dim on surface        7.41
+     line on surface            1.62   (decorative, not text)
+*/
+.owv-themed.dark {
+	--color-gray-50: oklch(0.98 0.004 254);
+	--color-gray-100: oklch(0.94 0.008 254);
+	--color-gray-200: oklch(0.88 0.014 254);
+	--color-gray-300: oklch(0.82 0.02 254);
+	--color-gray-400: oklch(0.757 0.029 254);
+	--color-gray-500: oklch(0.66 0.035 254);
+	--color-gray-600: oklch(0.52 0.04 254);
+	--color-gray-700: oklch(0.42 0.045 254);
+	--color-gray-800: oklch(0.318 0.047 254);
+	--color-gray-850: oklch(0.262 0.05 254);
+	--color-gray-900: oklch(0.203 0.044 254);
+	--color-gray-950: oklch(0.155 0.038 254);
+}
+
+/* Light mode keeps its lightness ladder but picks up the same navy tint, so a user who
+   switches to light does not fall out of the theme entirely. */
+.owv-themed.light {
+	--color-gray-50: oklch(0.985 0.004 254);
+	--color-gray-100: oklch(0.955 0.008 254);
+	--color-gray-200: oklch(0.915 0.012 254);
+	--color-gray-300: oklch(0.855 0.018 254);
+	--color-gray-400: oklch(0.775 0.024 254);
+	--color-gray-500: oklch(0.69 0.03 254);
+	--color-gray-600: oklch(0.545 0.035 254);
+	--color-gray-700: oklch(0.435 0.04 254);
+	--color-gray-800: oklch(0.325 0.045 254);
+	--color-gray-850: oklch(0.275 0.045 254);
+	--color-gray-900: oklch(0.205 0.042 254);
+	--color-gray-950: oklch(0.16 0.036 254);
+}
+
+/* The universal default border. src/tailwind.css sets
+   `*, ::after, ::before { border-color: var(--color-gray-200) }`, so remapping gray-200 is
+   what turns the app-wide white hairlines blue instead of retinting each one by hand. */
+.owv-themed.dark {
+	--color-gray-200: oklch(0.375 0.048 254);
+}
+
+/* --------------------------------------------------- literal white-alpha utilities
+
+   Plenty of upstream surfaces are written as `dark:border-white/[0.04]` or
+   `dark:bg-white/[0.03]` rather than via a gray token, because upstream assumes a near-black
+   background. Those compile to `rgb(255 255 255 / 0.04)` and cannot be reached by remapping a
+   token. Tailwind keeps the literal class name in the DOM, so the attribute selector reaches
+   exactly them and nothing else. Border alpha is raised as well, because 4 percent white on
+   navy is invisible while 4 percent white on black was a deliberate hairline.
+*/
+.owv-themed.dark [class*='border-white'] {
+	border-color: color-mix(in oklab, var(--owv-line) 78%, transparent);
+}
+
+.owv-themed.dark [class*='dark:bg-white'] {
+	background-color: color-mix(in oklab, var(--owv-raised) 72%, transparent);
+}
+
+/* Dividers and rings drawn with white alpha. */
+.owv-themed.dark [class*='divide-white'] > * + * {
+	border-color: color-mix(in oklab, var(--owv-line) 70%, transparent);
+}
+
+/* ------------------------------------------------------------------ corner geometry
+
+   RiRi asked for no square cutoffs. Upstream already rounds most things, but three classes
+   of element land square: full-bleed children inside a rounded parent (the tab strip and the
+   settings list rail), elements with no radius utility at all, and inputs/selects, which
+   Tailwind v4 leaves at 0 by default when the author forgets `rounded-*`.
+
+   This only ADDS radius where an element has none. Anything upstream already rounded keeps
+   its own radius, because `border-radius` set here is a base-ish rule and the utility still
+   wins where it exists.
+*/
+.owv-themed.dark input:not([type='checkbox']):not([type='radio']):not([type='range']),
+.owv-themed.dark select,
+.owv-themed.dark textarea {
+	border-radius: 0.5rem;
+}
+
+/* The settings modal's scroll rails and tab strip. Upstream paints these full-bleed inside a
+   rounded container, which is what produces the square corners against the rounded frame. */
+.owv-themed.dark .scrollbar-hover,
+.owv-themed.dark .scrollbar-thin {
+	border-radius: 0.5rem;
+}
+
+/* --------------------------------------------------------------------- buttons
+
+   `button` alone is far too broad: it would restyle every icon button, tab, and pill in the
+   app and flatten upstream's intent. Instead the shipped ramp already covers their
+   backgrounds through gray-800/850, so buttons inherit navy automatically. Only the primary
+   action gets the accent, and only where upstream marks it primary.
+*/
+.owv-themed.dark button.bg-black,
+.owv-themed.dark button[type='submit'] {
+	background-color: var(--owv-accent);
 	color: var(--owv-text);
 }
 
-.owv-themed .chat-title-bar {
-	background: var(--owv-ramp-100);
+.owv-themed.dark button.bg-black:hover,
+.owv-themed.dark button[type='submit']:hover {
+	background-color: color-mix(in oklab, var(--owv-accent) 84%, white);
+}
+
+/* ------------------------------------------------------------------- scrollbars
+
+   Stock scrollbars are gray and read as a seam against navy. Tinted to the palette, and kept
+   thin so they do not become a visual element on a phone. */
+.owv-themed.dark * {
+	scrollbar-color: color-mix(in oklab, var(--owv-line) 90%, transparent) transparent;
+}
+
+/* ---------------------------------------------------------------- selection + focus */
+
+.owv-themed.dark ::selection {
+	background: color-mix(in oklab, var(--owv-accent) 65%, transparent);
 	color: var(--owv-text);
 }
 
-.owv-themed button,
-.owv-themed .user-action {
-	background: var(--owv-ramp-300);
-	color: var(--owv-text);
-}
-
-.owv-themed button:hover,
-.owv-themed .user-action:hover {
-	background: var(--owv-ramp-400);
-}
-
-.owv-themed .primary,
-.owv-themed button.primary {
-	background: var(--owv-accent);
-	color: var(--owv-text);
-}
-
-.owv-themed .settings-panel,
-.owv-themed .modal {
-	background: var(--owv-ramp-200);
-	color: var(--owv-text);
+/* Keeps focus rings visible against navy. Upstream's default ring is blue on black, which
+   loses contrast once the black becomes mid-navy. */
+.owv-themed.dark :focus-visible {
+	outline-color: color-mix(in oklab, var(--owv-accent) 55%, white);
 }

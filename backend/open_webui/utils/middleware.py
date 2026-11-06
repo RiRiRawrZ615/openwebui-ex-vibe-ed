@@ -95,6 +95,7 @@ from open_webui.utils.ex_context_window import shape_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_trim import gate_features
+from open_webui.utils.ex_loop_guard import refused_call_note, would_repeat
 from open_webui.utils.ex_wiring import (
     drain_steering,
     index_chat_memory,
@@ -6029,8 +6030,58 @@ async def streaming_chat_response_handler(response, ctx):
                     response_tool_calls = [output_by_call_id[call['id']] for call in response_tool_calls]
                     delegate_calls = [call for call in response_tool_calls if call.get('name') == 'delegate_task']
                     tool_results = {}
+
+                    # EX loop refusal. The note injected at the iteration boundary asks the model
+                    # to stop; this is what happens when it does not. A call whose exact
+                    # signature has already run twice is not executed a third time, and the
+                    # model gets a deterministic refusal as that call's result.
+                    #
+                    # Refusing rather than detecting-after-the-fact is the whole point. Running
+                    # the call and then reporting that it repeated spends a full generation to
+                    # learn something already known. The threshold counts total occurrences, so
+                    # the third identical attempt is the one that fails, which is the behaviour
+                    # RiRi asked for.
+                    refused_call_ids = set()
+                    if ex_settings.get('loopGuard'):
+                        try:
+                            for tool_call in response_tool_calls:
+                                if would_repeat(
+                                    prior_output + output,
+                                    tool_call.get('name', ''),
+                                    tool_call.get('arguments', ''),
+                                ):
+                                    refused_call_ids.add(tool_call['call_id'])
+                                    log.warning(
+                                        'EX loop guard refused repeat call to %s',
+                                        tool_call.get('name', ''),
+                                    )
+                                    if event_emitter:
+                                        await event_emitter(
+                                            {
+                                                'type': 'status',
+                                                'data': {
+                                                    'action': 'ex_loop_guard',
+                                                    'description': refused_call_note(
+                                                        tool_call.get('name', '')
+                                                    ),
+                                                    'done': True,
+                                                },
+                                            }
+                                        )
+                        except Exception:
+                            log.exception('EX loop guard refusal check failed; running calls unguarded')
+
                     for tool_call in response_tool_calls:
-                        if tool_call.get('name') != 'delegate_task':
+                        if tool_call['call_id'] in refused_call_ids:
+                            # Shape matches an executed call so the downstream unpack is unchanged.
+                            tool_results[tool_call['call_id']] = (
+                                {},
+                                refused_call_note(tool_call.get('name', '')),
+                                None,
+                                None,
+                                False,
+                            )
+                        elif tool_call.get('name') != 'delegate_task':
                             tool_results[tool_call['call_id']] = await execute_tool_call(
                                 form_data, metadata, event_caller, tool_call
                             )
@@ -6039,7 +6090,15 @@ async def streaming_chat_response_handler(response, ctx):
                             [tool_call['call_id'] for tool_call in delegate_calls],
                             await asyncio.gather(
                                 *(
-                                    execute_tool_call(form_data, metadata, event_caller, tool_call)
+                                    (
+                                        {},
+                                        refused_call_note(tool_call.get('name', '')),
+                                        None,
+                                        None,
+                                        False,
+                                    )
+                                    if tool_call['call_id'] in refused_call_ids
+                                    else execute_tool_call(form_data, metadata, event_caller, tool_call)
                                     for tool_call in delegate_calls
                                 )
                             ),

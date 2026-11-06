@@ -81,6 +81,7 @@
 	import { acquireWakeLock } from '$lib/utils/wakeLock';
 	import { routeAvatarAnimation } from '$lib/utils/voice-avatar';
 	import { createTemporaryChatId, isTemporaryChatId } from '$lib/utils/chatId';
+	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { resumeTemporaryChat } from '$lib/apis';
 	import {
 		applyResponseStreamEvent,
@@ -1626,6 +1627,10 @@
 					}
 					if (!event.shared && event.message_id === history.currentId) {
 						taskIds = null;
+						// The turn finished without an error, so any accumulated failure count for this
+						// message is spent. Without this reset, an occasional error across a long session
+						// would eventually trip the three-strike limit and stop auto-continue silently.
+						clearFailureState(event.message_id);
 						// Set all response messages to done
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
@@ -4676,9 +4681,84 @@
 		}
 		history.messages[responseMessage.id] = responseMessage;
 		if (!responseFailed) toast.error(errorMessage);
+
+		// Auto-continue. A turn that ended in an error is not a finished turn, so this presses
+		// the same button the user would press: Continue, on this message.
+		//
+		// The guard is what makes it safe. Retrying a broken request forever is worse than
+		// stopping, so failures are counted per message and cleared the moment a turn produces
+		// content or completes normally. Three failures that arrive faster than the backoff
+		// window mean the request itself is broken, not slow, and the loop stops there.
+		scheduleAutoContinue(responseMessage, errorMessage);
+	};
+
+	// Per-message failure tracking. Cleared on any successful content, so a long session that
+	// errors once an hour never accumulates toward the limit.
+	const exFailureState = new Map<string, { count: number; lastAt: number; timer?: any }>();
+	const EX_INSTANT_WINDOW_MS = 4000;
+	const EX_MAX_INSTANT_FAILURES = 3;
+
+	const clearFailureState = (messageId: string) => {
+		const state = exFailureState.get(messageId);
+		if (state?.timer) clearTimeout(state.timer);
+		exFailureState.delete(messageId);
+	};
+
+	const scheduleAutoContinue = (responseMessage, errorMessage: string) => {
+		if (!$settings) return;
+		const ex = resolveExSettings($settings);
+		// autoRetry is the existing EX switch for "keep going after a failure"; resumeOnCrash is
+		// the separate one for a turn that died mid-work. Either being on is enough here, because
+		// both describe the same intent from the user's side.
+		if (!ex.autoRetry && !ex.resumeOnCrash) return;
+
+		const id = responseMessage.id;
+		const now = Date.now();
+		const previous = exFailureState.get(id);
+		const recent = previous && now - previous.lastAt < EX_INSTANT_WINDOW_MS ? previous.count : 0;
+		const count = recent + 1;
+
+		if (count > EX_MAX_INSTANT_FAILURES) {
+			console.warn(
+				`auto-continue stopped for ${id}: ${count} failures inside ${EX_INSTANT_WINDOW_MS}ms`
+			);
+			toast.error('Automatic retry stopped after three immediate failures. Not retrying.');
+			exFailureState.delete(id);
+			return;
+		}
+
+		// Backoff grows with consecutive failures, so a provider that is rate limiting gets
+		// breathing room instead of three requests in one second.
+		const delay = Math.min(8000, 500 * 2 ** (count - 1));
+		const timer = setTimeout(async () => {
+			const current = history.messages[id];
+			// Only continue if the message is still the one that failed and nothing else has
+			// moved on. A user who retyped, stopped, or regenerated in the meantime must not have
+			// their action quietly undone by a queued retry.
+			if (!current || current.id !== id) return clearFailureState(id);
+			if (current.error && !current.content && !current.done) return;
+
+			try {
+				// Clear the error banner before the retry, otherwise the turn looks failed while
+				// it is actually running again.
+				delete current.error;
+				current.done = true;
+				history.messages[id] = current;
+				await tick();
+				await continueResponse(current);
+			} catch (err) {
+				console.warn(`auto-continue retry failed for ${id}: ${err}`);
+			}
+		}, delay);
+
+		exFailureState.set(id, { count, lastAt: now, timer });
 	};
 
 	const stopResponse = async (processQueue = true, messageId = history.currentId) => {
+		// A manual stop clears any queued auto-continue. Without this, pressing stop would be
+		// undone a second later by a retry the user never asked for, which is the worst
+		// possible behaviour for a stop button.
+		if (messageId) clearFailureState(messageId);
 		const responseMessage = messageId ? history.messages[messageId] : null;
 		if (responseMessage && (responseMessage.user_id ?? chat?.user_id ?? $user?.id) !== $user?.id)
 			return;

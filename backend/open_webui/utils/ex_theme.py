@@ -46,6 +46,25 @@ RAMP_STOPS = (50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950)
 
 BUILTIN_THEMES = ("system", "light", "oled-dark", "her")
 
+# Named presets. A preset is data, not a branch: the picker sends a seed and a gradient, and
+# build_theme measures the result like any other theme. Nothing here can produce a palette
+# that skipped the contrast check.
+#
+# Each entry is (name, accent, surface, gradient stops, one-line intent). The intent string is
+# what the picker shows, so the list is self-describing rather than a row of bare hex codes.
+THEME_PRESETS = (
+    ("navy", "#24406b", "#12203a", ("#0b1729", "#16304f", "#274a78"),
+     "deep navy, the default"),
+    ("midnight", "#1b2c4d", "#0d1526", ("#070f1c", "#101c33", "#1b2c4d"),
+     "near-black blue for dark rooms"),
+    ("slate", "#2f4a6b", "#1a2536", ("#111a27", "#1c2a3d", "#33506f"),
+     "desaturated blue-grey, lowest chroma"),
+    ("ocean", "#1e4f6b", "#0f2431", ("#071720", "#12313f", "#1e5a78"),
+     "teal-leaning navy"),
+    ("indigo", "#3a3a7a", "#1a1a3d", ("#0e0e24", "#1d1d47", "#3f3f8a"),
+     "violet-leaning navy"),
+)
+
 # Default theme as RiRi asked for it: navy, not cobalt. She called cobalt too bright, so
 # the seed is the darker navy and the gradient runs to a lighter blue.
 DEFAULT_THEME_SEED = "#24406b"
@@ -145,6 +164,41 @@ def ramp(seed: str, dark: bool) -> dict:
         amount = stop / 1000 if dark else 1 - stop / 1000
         stops[stop] = mix(seed, target, amount)
     return {"seed": seed, "stops": stops, "dark": dark}
+
+
+# Scale factors for the four tokens the app actually paints surfaces with. These exist
+# because ramp() is the wrong tool for them: mixing toward #0b0b0b desaturates the hue as it
+# darkens, so a navy seed reaches the dark end as neutral charcoal. That is precisely the
+# failure this fork is fixing, and reusing the general ramp would reintroduce it.
+#
+# Scaling every channel by the same factor preserves hue exactly (each channel ratio is
+# unchanged), so the result is the same color at a different brightness rather than a
+# different color that happens to be darker. No clamping is reached for any sane accent.
+APP_RAMP_FACTORS = ((800, 1.0), (850, 0.82), (900, 0.62), (950, 0.45))
+
+
+def app_ramp(accent: str) -> dict:
+    """The four surface tokens the app resolves `dark:bg-gray-*` from.
+
+    This is the lever. Measured in this tree: every panel is `dark:bg-gray-900`, which
+    compiles to `background-color: var(--color-gray-900)`. Retinting these four values
+    retints the sidebar, the modals, the message bubbles and the settings panels at once,
+    without naming a single component.
+
+    Returned as #rrggbb because the frontend writes them with style.setProperty, which the
+    browser must be able to parse from the string alone.
+    """
+    normalized = normalize_hex(accent)
+    if not normalized:
+        return {}
+    rgb = to_rgb(normalized)
+    if not rgb:
+        return {}
+    out = {}
+    for stop, factor in APP_RAMP_FACTORS:
+        scaled = tuple(min(255, max(0, round(channel * factor))) for channel in rgb)
+        out[stop] = "#{:02x}{:02x}{:02x}".format(*scaled)
+    return out
 
 
 def gradient(stops: list[str], angle_deg: int = 135) -> dict:
@@ -288,6 +342,7 @@ def build_theme(
         "mode": "dark" if dark else "light",
         "adjustment": float(adjust_by),
         "tokens": tokens,
+        "app_ramp": app_ramp(accent),
         "ramp": table,
         "gradient": grad,
         "wallpaper": wall,
@@ -366,7 +421,8 @@ __all__ = [
     "DEFAULT_THEME_SEED",
     "DEFAULT_SURFACE",
     "DEFAULT_TEXT",
-    "DEFAULT_GRADIENT",
+    "app_ramp",
+    "THEME_PRESETS",
     "ADJUST_CEILING",
     "ADJUST_DEFAULT",
 ]

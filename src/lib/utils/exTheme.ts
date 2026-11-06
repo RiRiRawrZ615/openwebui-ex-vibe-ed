@@ -31,6 +31,7 @@ export type Theme = {
 	mode: 'dark' | 'light';
 	adjustment: number;
 	tokens: Record<string, string>;
+	appRamp: Record<number, string>;
 	ramp: Record<number, string>;
 	gradient: { stops: string[]; css: string; refused: string[] };
 	pairings: ThemePairing[];
@@ -124,6 +125,34 @@ export function ramp(seed: string, dark: boolean): Record<number, string> {
 	return table;
 }
 
+// Scale factors for the four tokens the app paints surfaces with. Mirrors APP_RAMP_FACTORS in
+// backend/open_webui/utils/ex_theme.py.
+//
+// Why scaling rather than mix() toward black: mixing desaturates as it darkens, so a navy seed
+// reaches the dark end as neutral charcoal. That is exactly the failure being fixed here, and
+// reusing ramp() for these four would have reintroduced it. Scaling every channel by the same
+// factor leaves each channel ratio untouched, so hue is preserved and the color stays itself
+// at a lower brightness.
+export const APP_RAMP_FACTORS: readonly (readonly [number, number])[] = [
+	[800, 1.0],
+	[850, 0.82],
+	[900, 0.62],
+	[950, 0.45]
+];
+
+export function appRamp(accent: string): Record<number, string> {
+	const norm = normalizeHex(accent);
+	if (!norm) return {};
+	const rgb = toRgb(norm);
+	if (!rgb) return {};
+	const out: Record<number, string> = {};
+	for (const [stop, factor] of APP_RAMP_FACTORS) {
+		const scaled = rgb.map((channel) => Math.min(255, Math.max(0, Math.round(channel * factor))));
+		out[stop] = '#' + scaled.map((c) => c.toString(16).padStart(2, '0')).join('');
+	}
+	return out;
+}
+
 export function gradient(stops: string[], angleDeg = 135): { stops: string[]; css: string; refused: string[] } {
 	const clean = stops.map((s) => normalizeHex(s));
 	const refused = stops.filter((_, i) => clean[i] === null).map((s) => String(s));
@@ -179,6 +208,7 @@ export function buildTheme(settings: ExSettings): Theme {
 		mode: dark ? 'dark' : 'light',
 		adjustment: Number(settings.themeAdjust) || 0,
 		tokens,
+		appRamp: appRamp(accent),
 		ramp: ramp(accent, dark),
 		gradient: grad,
 		pairings,
@@ -210,6 +240,14 @@ export function cssTokens(theme: Theme): string {
 	const lines: string[] = [];
 	for (const [name, value] of Object.entries(theme.tokens)) {
 		if (value) lines.push(`\t${name}: ${value};`);
+	}
+	// The app ramp. These four are the ones that change what is on screen: upstream resolves
+	// `dark:bg-gray-900` to var(--color-gray-900), so retinting these retints every panel at
+	// once. Emitting only the --owv-* names was the original wiring mistake. Upstream reads
+	// none of them, so a perfectly correct engine had no visible effect.
+	for (const stop of [800, 850, 900, 950]) {
+		const value = theme.appRamp?.[stop];
+		if (value) lines.push(`\t--color-gray-${stop}: ${value};`);
 	}
 	for (const stop of RAMP_STOPS) {
 		const value = theme.ramp[stop];

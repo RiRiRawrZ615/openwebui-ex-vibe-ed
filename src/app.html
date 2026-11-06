@@ -61,10 +61,34 @@
 					localStorage.theme = 'system';
 				}
 
+				// OpenWebVibes palette. The fork's runtime theme owns the ramp, so this boot
+				// script must not stamp near-black inline before it runs. Inline custom
+				// properties beat every stylesheet, so a black stamp here is exactly what made
+				// every panel black while the page gradient appeared to work.
+				//
+				// The values are written from localStorage so the very first paint is already
+				// navy, with no flash of stock dark. Setting them empty (the owvTheme flag
+				// removed) hands the four tokens back to src/tailwind.css untouched.
+				const owvEnabled = localStorage.getItem('owvTheme') !== 'off';
+				const owvRamp = {
+					'--color-gray-800': '#24405f',
+					'--color-gray-850': '#1c3450',
+					'--color-gray-900': '#14293f',
+					'--color-gray-950': '#0e1d2e'
+				};
+				const applyOwvRamp = () => {
+					document.documentElement.classList.add('owv-themed');
+					for (const [key, value] of Object.entries(owvRamp)) {
+						document.documentElement.style.setProperty(key, value);
+					}
+				};
+
 				if (localStorage.theme === 'system') {
 					document.documentElement.classList.add(prefersDarkTheme ? 'dark' : 'light');
-					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#171717' : '#ffffff');
+					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#0b1729' : '#ffffff');
 				} else if (localStorage.theme === 'oled-dark') {
+					// OLED black is a stock theme the user can still pick. It is deliberately
+					// allowed to win, because picking it means asking for true black.
 					document.documentElement.style.setProperty('--color-gray-800', '#101010');
 					document.documentElement.style.setProperty('--color-gray-850', '#050505');
 					document.documentElement.style.setProperty('--color-gray-900', '#000000');
@@ -79,8 +103,27 @@
 					metaThemeColorTag.setAttribute('content', '#983724');
 				} else {
 					document.documentElement.classList.add('dark');
-					metaThemeColorTag.setAttribute('content', '#171717');
+					metaThemeColorTag.setAttribute('content', owvEnabled ? '#0b1729' : '#171717');
 				}
+
+				// Applied after the theme branch, so OLED black above still wins when chosen.
+				if (owvEnabled && localStorage.theme !== 'oled-dark') {
+					applyOwvRamp();
+					metaThemeColorTag.setAttribute('content', '#0b1729');
+				}
+
+				// Re-applied on system theme flips and on storage events from another tab, so a
+				// monitor switch cannot silently restore the stock ramp mid-session.
+				window.addEventListener('storage', (event) => {
+					if (event.key === 'owvTheme') {
+						if (localStorage.getItem('owvTheme') === 'off') {
+							document.documentElement.classList.remove('owv-themed');
+							for (const key of Object.keys(owvRamp)) document.documentElement.style.removeProperty(key);
+						} else if (localStorage.theme !== 'oled-dark') {
+							applyOwvRamp();
+						}
+					}
+				});
 
 				// LICENSE covers these Open WebUI splash logo assets.
 				// Do not alter, remove, obscure, or replace them except as LICENSE permits:
@@ -222,7 +265,7 @@
 		}
 
 		html.dark #splash-screen {
-			background: #000;
+			background: #0b1729;
 		}
 
 		html.her #splash-screen {

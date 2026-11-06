@@ -67,7 +67,12 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import { estimateMessagesTokens } from '$lib/utils/contextUsage';
 	import { resolveExSettings } from '$lib/utils/exSettings';
-	import { formatStatsLine, generationStats, liveStats } from '$lib/utils/exStats';
+	import { ArrivalRate, formatStatsLine, generationStats, liveStats } from '$lib/utils/exStats';
+	// estimateTokens lives in contextUsage.ts, not exStats.ts. It was called at the arrival
+	// sampler without being imported, which threw a ReferenceError on every streaming render
+	// and took the whole message component, and therefore the turn, down with it.
+	import { estimateTokens } from '$lib/utils/contextUsage';
+	import StatsRow from './StatsRow.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
 	import { fade } from 'svelte/transition';
@@ -219,14 +224,28 @@
 	// rate during generation rather than a guess. Providers usually report usage only in
 	// the final chunk, so everything shown before that is labelled as an estimate and is
 	// never merged into message.usage.
+	//
+	// Measured by arrival, not by elapsed-since-start. The earlier version divided the whole
+	// message by wall time, so a long agentic turn collapsed into one blended figure that
+	// described the turn instead of the reply. One sampler per message, because a
+	// multi-response turn has several streaming at once and a shared buffer would blend their
+	// rates into a number describing neither.
 	// Reactive so a settings change in the EX tab applies without a reload.
 	$: exSettings = resolveExSettings($settings);
+	const exArrival = new ArrivalRate();
 	let liveStartMs: number | null = null;
 	let liveElapsedSec = 0;
+	let liveRate = 0;
 
 	$: if (message && message.role === 'assistant' && !message.done && exSettings.liveStats) {
-		if (liveStartMs === null) liveStartMs = message.timestamp ?? Date.now();
+		if (liveStartMs === null) {
+			liveStartMs = message.timestamp ?? Date.now();
+			exArrival.reset();
+		}
 		liveElapsedSec = Math.max(0, (Date.now() - liveStartMs) / 1000);
+		// Feeds the trailing window. Called on every content change, which is what makes the
+		// figure instantaneous rather than a lifetime average.
+		liveRate = exArrival.record(estimateTokens(visibleResponseContent));
 	}
 	$: if (message?.done) {
 		liveStartMs = null;
@@ -238,7 +257,7 @@
 	$: exWindowTokens = message ? estimateMessagesTokens(createMessagesList(history, message.id)) : 0;
 	$: exLive =
 		exSettings.liveStats && message?.role === 'assistant' && !message.done
-			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens)
+			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens, liveRate)
 			: null;
 	$: exStats = message?.usage ? generationStats(message.usage) : null;
 
@@ -762,12 +781,6 @@
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
 
-						{#if exLive && hasResponseContent}
-							<div class="mb-1 text-xs text-gray-500 dark:text-gray-400 font-mono" title="Estimated during generation">
-								{exLive.line}
-							</div>
-						{/if}
-
 						{#if message?.files && message.files?.filter( (f) => ['image', 'file'].includes(f.type) ).length > 0}
 							<div
 								class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
@@ -998,6 +1011,14 @@
 
 							{#if message.code_executions}
 								<CodeExecutions codeExecutions={message.code_executions} />
+							{/if}
+
+							<!-- Stats belong under the answer, not above it. Above, the row pushed the text
+							     down a line and read as a header for the reply instead of a note about it. -->
+							{#if exLive && hasResponseContent}
+								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} />
+							{:else if exStats && message.done && !message.error}
+								<StatsRow stats={exStats} approximate={false} />
 							{/if}
 						</div>
 					</div>
