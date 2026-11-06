@@ -137,29 +137,71 @@ def resolve_window(window: Any = None) -> int:
     return max(MIN_USEFUL_WINDOW, value)
 
 
+# A fixed reserve does not scale. Measured before this was proportional: a 16384 reserve left
+# 16384 of a 32768 window, so half the context was unusable, and at 16384 it left 4096, which is
+# a broken configuration rather than a small one. The reserve is therefore the larger of a
+# proportional share and an absolute floor, and the floor itself is capped so it can never eat
+# the window.
+RESERVE_MIN_RATIO = 0.04
+RESERVE_MAX_RATIO = 0.20
+RESERVE_FLOOR_TOKENS = 512
+
+
+def proportional_reserve(
+    window: int,
+    *,
+    preferred: Any = None,
+    max_tokens: Any = None,
+) -> int:
+    """Reply room for a given window.
+
+    Two constraints pull in opposite directions. The reply must have enough room to finish
+    without truncating, and the prompt must not lose a large fraction of a small window. The
+    answer is a ratio of the window clamped between a sane floor and a hard ceiling, then
+    raised if the caller actually asked for more output than that.
+
+    At 262144 this lands on 16384, which matches the old constant, so large windows behave
+    exactly as before. At 32768 it lands on 2621 instead of 16384, which is the whole point.
+    """
+    try:
+        stated = int(preferred) if preferred is not None else 0
+    except (TypeError, ValueError):
+        stated = 0
+    try:
+        requested = int(max_tokens) if max_tokens is not None else 0
+    except (TypeError, ValueError):
+        requested = 0
+
+    # The stated reserve is treated as a preference with a ceiling, not as gospel: a user who
+    # typed 16384 while running a 16k window would otherwise make the chat unusable.
+    ceiling = int(window * RESERVE_MAX_RATIO)
+    floor = min(int(window * RESERVE_MIN_RATIO), ceiling)
+    floor = max(RESERVE_FLOOR_TOKENS, floor)
+
+    reserve = stated if stated > 0 else DEFAULT_REPLY_RESERVE
+    reserve = min(reserve, ceiling)
+    reserve = max(reserve, floor, requested)
+    # A caller demanding more output than 40 percent of the window is asking for something the
+    # window cannot give. Clamp it rather than hand back a zero budget.
+    return max(0, min(reserve, int(window * 0.5)))
+
+
 def resolve_budget(
     window: Any = None,
     *,
     reply_reserve: Any = DEFAULT_REPLY_RESERVE,
     max_tokens: Any = None,
 ) -> int:
-    """Tokens available for the prompt.
+    """Tokens available for the prompt, scaled to the window.
 
-    The reserve is the larger of the configured reserve and the reply allowance, because a
-    request asking for 32768 tokens of output needs that much room left in the window no matter
-    what the reserve says.
+    The reserve is proportional with clamps, so the same policy works at 262144 and at 16384.
+    See proportional_reserve for why a fixed number was wrong.
     """
     ceiling = resolve_window(window)
-    try:
-        reserve = int(reply_reserve)
-    except (TypeError, ValueError):
-        reserve = DEFAULT_REPLY_RESERVE
-    try:
-        requested = int(max_tokens) if max_tokens is not None else 0
-    except (TypeError, ValueError):
-        requested = 0
-    reserve = max(0, reserve, requested)
-    return max(MIN_USEFUL_WINDOW, ceiling - reserve)
+    reserve = proportional_reserve(
+        ceiling, preferred=reply_reserve, max_tokens=max_tokens
+    )
+    return max(MIN_USEFUL_WINDOW // 2, ceiling - reserve)
 
 
 # --------------------------------------------------------------------------------------

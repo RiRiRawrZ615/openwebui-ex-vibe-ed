@@ -2347,7 +2347,22 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # the byte identical prefix the engine caches survives from turn to turn.
     try:
         if ex_settings.get('contextMode') != 'compact':
-            ex_window = ex_settings.get('contextWindow') or 262144
+            # Per-request override wins. Without this, a client that knows the real engine
+            # window (a small context profile, a proxy, a test) could not get the shaping
+            # pass to respect it, and the pass would happily build a request larger than the
+            # window while reporting the default.
+            # The client's params live on form_data, not on metadata. metadata is built in
+            # utils/chat.py from chat_id and message_id only, so reading params from there
+            # silently produced the default every time and the override never applied.
+            ex_params = {
+                **(form_data.get('params') or {}),
+                **(metadata.get('params') or {}),
+            }
+            ex_window = (
+                ex_params.get('exContextWindow')
+                or ex_settings.get('contextWindow')
+                or 262144
+            )
             ex_block = '\n\n'.join(
                 block['content'] for block in ex_context_blocks if block.get('content')
             )
