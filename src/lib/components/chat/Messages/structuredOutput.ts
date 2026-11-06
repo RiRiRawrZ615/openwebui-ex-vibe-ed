@@ -361,6 +361,23 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 	const toolOutputByCallId: Record<string, OutputItem> = {};
 	const toolCallByCallId: Record<string, OutputItem> = {};
 
+	// Tool activity is hoisted out of the message flow and emitted once at the end.
+	//
+	// This is the real render path for a chat response (ResponseMessage -> ContentRenderer ->
+	// StructuredOutputRenderer), so changing the markdown token path does not affect it.
+	//
+	// Previously each block of detail tokens was flushed inline, at the position where it
+	// happened. An agentic turn alternates prose and calls, so the message read as
+	// paragraph, call row, paragraph, call row, each row carrying its own full-width
+	// Input/Output panel. The result was that the answer was buried under the transcript of
+	// producing it.
+	//
+	// Now every detail token is collected into one list and emitted as a single
+	// detail_group after all message text. The body stays readable prose; the whole turn's
+	// activity is one collapsible block at the bottom, in original order, and each call is
+	// still individually inspectable inside it.
+	const hoistedDetailTokens: OutputDetailToken[] = [];
+
 	for (const item of output) {
 		if (item?.type === 'function_call_output' && item.call_id) {
 			toolOutputByCallId[item.call_id] = item;
@@ -369,19 +386,11 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 		}
 	}
 
-	const flushDetails = () => {
-		// Same rule as getDisplayTokens in MarkdownTokens.svelte: a single call is still a run.
-		// Emitting it as detail_single re-introduced the bare full-width row that made single
-		// tool calls look like spam next to collapsed multi-call runs.
-		if (currentDetailTokens.length > 0) {
-			displayItems.push({
-				type: 'detail_group',
-				id: `detail-group-${displayItems.length}`,
-				tokens: [...currentDetailTokens]
-			});
-		}
-		currentDetailTokens.length = 0;
-	};
+	// Kept as a named no-op so the call sites below stay readable and the inline-flush
+	// behaviour is trivially restorable. Nothing is emitted here any more: detail tokens
+	// are appended to hoistedDetailTokens and emitted once, after the whole output has been
+	// walked, by the single flush at the end of this function.
+	const flushDetails = () => {};
 
 	output.forEach((item, index) => {
 		if (!item) {
@@ -412,7 +421,7 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 		if (item.type && GROUPABLE_OUTPUT_TYPES.has(item.type)) {
 			const token = buildDetailToken(item, index === output.length - 1, toolOutputByCallId);
 			if (token) {
-				currentDetailTokens.push(token);
+				hoistedDetailTokens.push(token);
 			}
 			return;
 		}
@@ -465,9 +474,16 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 		}
 	});
 
-	flushDetails();
-
-	// Providers can reuse item ids across tool-call rounds.
+	// The single flush for the whole turn. Everything the turn did is one block, appended
+	// after the last piece of message text.
+	if (hoistedDetailTokens.length > 0) {
+		displayItems.push({
+			type: 'detail_group',
+			id: `detail-group-${displayItems.length}`,
+			tokens: hoistedDetailTokens
+		});
+	}
+	currentDetailTokens.length = 0;
 	const seenIds = new Set<string>();
 	displayItems.forEach((displayItem, index) => {
 		if (seenIds.has(displayItem.id)) {
