@@ -13,11 +13,6 @@
 	import {
 		getExStatus,
 		getExBackendCheck,
-		getExInstallPlan,
-		getExDiscover,
-		postExDiscoverManual,
-		type ExDiscoverReport,
-		getExTheme,
 		getExRecovery,
 		getExModules,
 		getExCluster,
@@ -31,16 +26,12 @@
 		type ExMemoryHit,
 	addExSteering,
 		runExBatch,
-		runExImport,
 		type ExBackendCheck,
 		type ExBatchSummary,
-		type ExImportReport,
-		type ExInstallPlan,
 		type ExStatusResponse
 	} from '$lib/apis/ex';
 	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { exSlots, refreshSlots } from '$lib/stores/exSlots';
-	import { buildTheme } from '$lib/utils/exTheme';
 	import BuiltinsSection from './BuiltinsSection.svelte';
 	import HelpSection from './HelpSection.svelte';
 
@@ -52,52 +43,7 @@
 	let ex = $state(resolveExSettings($settings));
 	let status: ExStatusResponse | null = $state(null);
 	let backendCheck: ExBackendCheck | null = $state(null);
-	let plan: ExInstallPlan | null = $state(null);
-	let importReport: ExImportReport | null = $state(null);
 
-	// Setup workflow state.
-	//
-	// The pattern the whole flow turns on: a machine that already has the engines is simply the
-	// case where probe() finds them. So there is one workflow, not a first-run one and a
-	// returning one, and what differs is only whether anything is missing when the page opens.
-	let discover: Record<string, ExDiscoverReport> | null = $state(null);
-	let discoverMissing: string[] = $state([]);
-	let discovering = $state(false);
-	let manualFor = $state<string | null>(null);
-	let manualPath = $state('');
-	let manualBusy = $state(false);
-
-	const probe = async () => {
-		discovering = true;
-		const res = await getExDiscover(localStorage.token, []);
-		if ('error' in res) {
-			toast.error(`${res.error}`);
-		} else {
-			discover = res.components;
-			discoverMissing = res.missing ?? [];
-		}
-		discovering = false;
-	};
-
-	const submitManual = async (component: string) => {
-		manualBusy = true;
-		// The backend validates that the path exists, is a file and is executable. It does not run
-		// it, so a wrong binary is caught here rather than at first use.
-		const res = await postExDiscoverManual(localStorage.token, component, manualPath);
-		if ('error' in res) {
-			toast.error(`${res.error}`);
-		} else if (!res.accepted) {
-			toast.error(res.reason);
-		} else {
-			toast.success(`${component}: ${res.path}`);
-			manualFor = null;
-			manualPath = '';
-			await probe();
-		}
-		manualBusy = false;
-	};
-
-	let themeReport: Record<string, any> | null = $state(null);
 	let recoveryReport: Record<string, any> | null = $state(null);
 	let modulesReport: Record<string, any> | null = $state(null);
 	let clusterReport: Record<string, any> | null = $state(null);
@@ -117,14 +63,8 @@
 
 	let loading = $state(true);
 	let checkingBackend = $state(false);
-	let planning = $state(false);
-	let importing = $state(false);
 
 	let modelPath = $state('');
-	let components = $state('webui');
-	let importSource = $state('');
-	let importTarget = $state('');
-	let importForce = $state(false);
 	let memoryStatus: ExMemoryStatus | null = $state(null);
 	let memoryQuery = $state('');
 	let memoryHits: ExMemoryHit[] = $state([]);
@@ -170,8 +110,6 @@
 		} else {
 			backendCheck = res;
 		}
-		planning = false;
-		plan = null;
 		checkingBackend = false;
 	};
 
@@ -224,53 +162,6 @@
 			toast.error(`${e}`);
 		}
 		memorySearching = false;
-	};
-
-	const buildPlan = async () => {
-		planning = true;
-		const res = await getExInstallPlan(localStorage.token, components.split(',').map((c) => c.trim()));
-		if ('error' in res) {
-			plan = null;
-			toast.error(`${res.error}`);
-		} else {
-			plan = res;
-		}
-		planning = false;
-	};
-
-	const runImport = async (dryRun: boolean) => {
-		if (!importSource) {
-			toast.error($i18n.t('settings.personal.vibes.importRequiresSource.description'));
-			return;
-		}
-		importing = true;
-		const res = await runExImport(localStorage.token, {
-			source: importSource,
-			target: importTarget,
-			dryRun,
-			force: !dryRun && importForce
-		});
-		if ('error' in res) {
-			importReport = null;
-			toast.error(`${res.error}`);
-		} else {
-			importReport = res;
-		}
-		importing = false;
-	};
-
-	// Theme is measured, not asserted. The mirror computes the pairings from the settings, and
-	// the report is what the user sees: a theme with a failing text pairing is not applied, and
-	// the failing pairing is named here instead of being silently half-rendered.
-	// Runes mode, matching the rest of this codebase: no legacy reactive labels. The preview is
-	// recomputed when the settings change, so the pairing report always reflects the values the
-	// user actually has, not the values at mount time.
-	let themePreview = $derived(buildTheme(ex));
-
-
-	const refreshTheme = async () => {
-		const res = await getExTheme(localStorage.token);
-		themeReport = 'error' in res ? null : res;
 	};
 
 	const refreshRecovery = async () => {
@@ -441,98 +332,6 @@
 						</UserSettingRow>
 					{/if}
 				{/each}
-			<!-- Setup: what this machine has, and what to do about anything missing. -->
-			<div class="mt-4 border-t border-gray-100 pt-3 dark:border-gray-850">
-			<div class="mb-2 flex items-center justify-between">
-				<span class="text-xs font-medium text-gray-700 dark:text-gray-300">This machine</span>
-				<button
-					type="button"
-					class="text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
-					on:click={probe}>Re-check</button
-				>
-			</div>
-
-			{#if discovering}
-				<div class="flex items-center gap-2 py-2 text-xs text-gray-500">
-					<Spinner /> Checking for installed engines…
-				</div>
-			{:else if discover}
-				{#if discoverMissing.length === 0}
-					<p class="mb-2 text-xs text-green-700 dark:text-green-400">
-						Everything needed is already installed. Nothing to do.
-					</p>
-				{:else}
-					<p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
-						Not found: {discoverMissing.join(', ')}. Install them above, or point at the
-						binary you already have.
-					</p>
-				{/if}
-
-				<div class="space-y-1.5">
-					{#each Object.entries(discover) as [component, report] (component)}
-						<div
-							class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-100 px-2 py-1.5 dark:border-gray-850"
-						>
-							<div class="min-w-0">
-								<div class="flex items-center gap-1.5 text-xs">
-									{#if report.found}
-										<span class="text-green-600 dark:text-green-400">●</span>
-									{:else}
-										<span class="text-gray-300 dark:text-gray-600">○</span>
-									{/if}
-									<span class="font-medium text-gray-700 dark:text-gray-300">{component}</span>
-									{#if report.source === 'path'}
-										<span class="text-gray-400 dark:text-gray-500">on PATH</span>
-									{:else if report.source === 'candidate'}
-										<span class="text-gray-400 dark:text-gray-500">known location</span>
-									{/if}
-								</div>
-								<div
-									class="truncate font-mono text-[0.625rem] text-gray-400 dark:text-gray-500"
-									title={report.path || ''}
-								>
-									{report.found ? report.path : `checked ${report.candidates_tried.length} locations`}
-								</div>
-							</div>
-
-							<button
-								type="button"
-								class="shrink-0 text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
-								on:click={() => {
-									manualFor = manualFor === component ? null : component;
-									manualPath = report.path || '';
-								}}
-							>{report.found ? 'Change' : 'Locate'}</button
-							>
-						</div>
-
-						{#if manualFor === component}
-							<div class="flex items-center gap-2 pl-2">
-								<input
-									type="text"
-									bind:value={manualPath}
-									placeholder="/path/to/binary"
-									class="h-7 min-w-0 flex-1 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 font-mono text-[0.6875rem] text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-								/>
-								<button
-									type="button"
-									disabled={manualBusy || !manualPath.trim()}
-									class="shrink-0 rounded-lg bg-gray-900 px-2 py-1 text-[0.6875rem] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-gray-900"
-									on:click={() => submitManual(component)}>Use</button
-								>
-								{#if manualBusy}<Spinner />{/if}
-							</div>
-						{/if}
-					{/each}
-				</div>
-			{:else}
-				<button
-					type="button"
-					class="text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
-					on:click={probe}>Check for installed engines</button
-				>
-			{/if}
-			</div>
 			{/if}
 		</UserSettingSection>
 
@@ -899,299 +698,6 @@
 			{/if}
 		</UserSettingSection>
 
-		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.install.title')}>
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.allowInstall.label')}
-				description={$i18n.t('settings.personal.vibes.allowInstall.description')}
-			>
-				<Switch
-					state={ex.allowInstall}
-					ariaLabelledbyId={labelId}
-					on:change={(e) => {
-						saveEx({ allowInstall: e.detail });
-					}}
-				/>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.components.label')}
-				description={$i18n.t('settings.personal.vibes.components.description')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					bind:value={components}
-					placeholder="webui,llamacpp,strata"
-					aria-label={$i18n.t('settings.personal.vibes.components.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			<button
-				class="text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white"
-				type="button"
-				on:click={buildPlan}
-			>
-				{$i18n.t('settings.personal.vibes.planInstall.label')}
-			</button>
-
-			{#if planning}
-				<div class="flex items-center gap-2 text-xs text-gray-500">
-					<Spinner />
-					{$i18n.t('Loading')}
-				</div>
-			{:else if plan}
-				<div class="text-xs text-gray-700 dark:text-gray-300">
-					<p class="text-gray-500 dark:text-gray-400">
-						{plan.runs
-							? $i18n.t('settings.personal.vibes.install.wouldRun.description')
-							: $i18n.t('settings.personal.vibes.install.dryRun.description')}
-					</p>
-					{#if plan.steps.length}
-						<ul class="flex flex-col gap-1 mt-1">
-							{#each plan.steps as step (step.component + step.action)}
-								<li>
-									<span class="font-medium">{step.component}</span>
-									<span class="font-mono text-gray-500 dark:text-gray-400"> - {step.action}</span>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-					{#if plan.refused.length}
-						<p class="mt-1 text-red-600 dark:text-red-400">
-							refused: {plan.refused.join(', ')}
-						</p>
-					{/if}
-				</div>
-			{/if}
-		</UserSettingSection>
-
-		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.import.title')}>
-			<p class="mb-2 text-[0.6875rem] text-gray-500 dark:text-gray-400">
-				{$i18n.t('settings.personal.vibes.import.readOnly.description')}
-			</p>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.import.source.label')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					bind:value={importSource}
-					placeholder="~/.open-webui/webui.db"
-					aria-label={$i18n.t('settings.personal.vibes.import.source.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.import.target.label')}
-				description={$i18n.t('settings.personal.vibes.import.target.description')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					bind:value={importTarget}
-					placeholder="defaults to the fork data dir"
-					aria-label={$i18n.t('settings.personal.vibes.import.target.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.import.force.label')}
-				description={$i18n.t('settings.personal.vibes.import.force.description')}
-			>
-				<Switch
-					state={importForce}
-					ariaLabelledbyId={labelId}
-					on:change={(e) => {
-						importForce = e.detail;
-					}}
-				/>
-			</UserSettingRow>
-
-			<div class="flex items-center gap-3">
-				<button
-					class="text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white"
-					type="button"
-					on:click={() => runImport(true)}
-				>
-					{$i18n.t('settings.personal.vibes.import.dryRun.label')}
-				</button>
-				<button
-					class="text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white"
-					type="button"
-					on:click={() => runImport(false)}
-				>
-					{$i18n.t('settings.personal.vibes.import.run.label')}
-				</button>
-			</div>
-
-			{#if importing}
-				<div class="flex items-center gap-2 text-xs text-gray-500">
-					<Spinner />
-					{$i18n.t('Loading')}
-				</div>
-			{:else if importReport}
-				<div class="text-xs text-gray-700 dark:text-gray-300">
-					{#if importReport.error}
-						<p class="text-red-600 dark:text-red-400">{importReport.error}</p>
-					{:else}
-						<p class="text-gray-500 dark:text-gray-400">
-							{importReport.rows} rows over {Object.keys(importReport.tables ?? {}).length} tables
-						</p>
-						<ul class="flex flex-col gap-1 mt-1">
-							{#each Object.entries(importReport.tables ?? {}) as [table, info] (table)}
-								<li class="font-mono">
-									{table}: {info.rows} rows{info.attempted ? ` (attempted ${info.attempted})` : ''}
-								</li>
-							{/each}
-						</ul>
-						{#if (importReport.skipped ?? []).length}
-							<p class="mt-1 text-gray-500 dark:text-gray-400">
-								skipped: {(importReport.skipped ?? []).join(', ')}
-							</p>
-						{/if}
-					{/if}
-				</div>
-			{/if}
-		</UserSettingSection>
-
-		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.theme.title')}>
-			<p class="mb-2 text-[0.6875rem] text-gray-500 dark:text-gray-400">
-				{$i18n.t('settings.personal.vibes.theme.contrast.description')}
-			</p>
-
-			<UserSettingRow let:labelId label={$i18n.t('settings.personal.vibes.theme.name.label')}>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					value={ex.themeName}
-					aria-label={$i18n.t('settings.personal.vibes.theme.name.label')}
-					on:change={(e) => saveEx({ themeName: e.target.value })}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			<!-- Explicit rows per part. A dynamic key inside bind:value is not something Svelte
-			     accepts, so the three color fields are spelled out rather than looped. -->
-			{#each [['accent', 'themeAccent'], ['surface', 'themeSurface'], ['text', 'themeText']] as [part, key] (part)}
-				<UserSettingRow let:labelId label={$i18n.t(`settings.personal.vibes.theme.${part}.label`)}>
-					<div class="flex items-center gap-2">
-						<input
-							type="text"
-							id={`${labelId}-control`}
-							value={ex[key]}
-							aria-label={$i18n.t(`settings.personal.vibes.theme.${part}.label`)}
-							class="h-7 w-24 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs font-mono text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-							on:change={(e) => saveEx({ [key]: e.target.value })}
-						/>
-						<span
-							class="inline-block h-5 w-5 rounded-md border border-gray-200"
-							style={`background:${ex[key]}`}
-						></span>
-					</div>
-				</UserSettingRow>
-			{/each}
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.theme.gradient.label')}
-				description={$i18n.t('settings.personal.vibes.theme.gradient.description')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					value={ex.themeGradient.join(', ')}
-					aria-label={$i18n.t('settings.personal.vibes.theme.gradient.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs font-mono text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-					on:change={(e) => saveEx({ themeGradient: e.target.value.split(',').map((s) => s.trim()) })}
-				/>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.theme.adjust.label')}
-				description={$i18n.t('settings.personal.vibes.theme.adjust.description')}
-			>
-				<input
-					type="range"
-					id={`${labelId}-control`}
-					min="-60"
-					max="60"
-					step="1"
-					value={ex.themeAdjust}
-					aria-label={$i18n.t('settings.personal.vibes.theme.adjust.label')}
-					on:change={(e) => saveEx({ themeAdjust: Number(e.target.value) })}
-					class="w-48 accent-blue-600"
-				/>
-				<span class="text-xs font-mono text-gray-500">{ex.themeAdjust}</span>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.theme.wallpaper.label')}
-				description={$i18n.t('settings.personal.vibes.theme.wallpaper.description')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					value={ex.themeWallpaper}
-					placeholder="https:// or a path inside the allowed roots"
-					on:change={(e) => saveEx({ themeWallpaper: e.target.value })}
-					aria-label={$i18n.t('settings.personal.vibes.theme.wallpaper.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			<UserSettingRow
-				let:labelId
-				label={$i18n.t('settings.personal.vibes.theme.icon.label')}
-				description={$i18n.t('settings.personal.vibes.theme.icon.description')}
-			>
-				<input
-					type="text"
-					id={`${labelId}-control`}
-					value={ex.themeIcon}
-					placeholder="static/ex_assets/icon.png"
-					on:change={(e) => saveEx({ themeIcon: e.target.value })}
-					aria-label={$i18n.t('settings.personal.vibes.theme.icon.label')}
-					class="h-7 w-48 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs font-mono text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
-				/>
-			</UserSettingRow>
-
-			{#if themePreview}
-				<div class="mt-2 text-xs">
-					<p class="text-gray-500 dark:text-gray-400">
-						{$i18n.t('settings.personal.vibes.theme.ready.label')}: {themePreview.mode}, {themePreview.measured ? 'measured' : 'not measured'}
-					</p>
-					<ul class="flex flex-col gap-1 mt-1 font-mono">
-						{#each themePreview.pairings as pair (pair.pair)}
-							<li class={pair.status === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-300'}>
-								{pair.pair}: {pair.ratio ?? 'unmeasurable'} ({pair.status})
-							</li>
-						{/each}
-					</ul>
-					{#if themePreview.failures.length}
-						<p class="mt-1 text-red-600 dark:text-red-400">
-							{$i18n.t('settings.personal.vibes.theme.refused.description')}
-						</p>
-					{/if}
-				</div>
-			{/if}
-
-			{#if themeReport}
-				<p class="mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
-					server css emitted: {themeReport.css ? 'yes' : 'no'}
-				</p>
-			{/if}
-		</UserSettingSection>
 
 		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.agentic.title')}>
 			<p class="mb-2 text-[0.6875rem] text-gray-500 dark:text-gray-400">

@@ -4614,5 +4614,10 @@
 	"YouTube": "",
 	"YouTube video player": "",
 	"Zoom in": "",
-	"Zoom out": ""
+	"Zoom out": "",
+	"settings.personal.setup.title": "Setup",
+	"settings.personal.themes.title": "Themes",
+	"settings.personal.vibes.sections.setup.title": "This machine",
+	"settings.personal.vibes.setup.thisMachine.label": "This machine",
+	"settings.personal.vibes.setup.allPresent.description": "Everything needed is already installed. Nothing to do."
 }

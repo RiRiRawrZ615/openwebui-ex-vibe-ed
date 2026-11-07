@@ -27,6 +27,8 @@
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
 	import OpenWebVibes from './Settings/OpenWebVibes.svelte';
+	import SetupTab from './Settings/SetupTab.svelte';
+	import ThemesTab from './Settings/ThemesTab.svelte';
 	import ExSlotHost from '../ex/ExSlotHost.svelte';
 	import Search from '../icons/Search.svelte';
 	import Connections from './Settings/Connections.svelte';
@@ -40,6 +42,7 @@
 	import WrenchAlt from '../icons/WrenchAlt.svelte';
 	import Face from '../icons/Face.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
+	import Wrench from '../icons/Wrench.svelte';
 	import AppNotification from '../icons/AppNotification.svelte';
 	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
 	import ArchiveBox from '../icons/ArchiveBox.svelte';
@@ -154,6 +157,8 @@
 		tools: $i18n.t('Services'),
 		personalization: $i18n.t('Preferences'),
 		vibes: $i18n.t('Fork'),
+		setup: $i18n.t('Fork'),
+		themes: $i18n.t('Fork'),
 		audio: $i18n.t('Preferences'),
 		data_controls: $i18n.t('Data'),
 		usage: $i18n.t('Data'),
@@ -240,6 +245,18 @@
 			titleKey: 'settings.personal.vibes.title',
 			title: $i18n.t('settings.personal.vibes.title'),
 			searchPrefixes: ['settings.personal.vibes.']
+		},
+		{
+			id: 'setup',
+			titleKey: 'settings.personal.setup.title',
+			title: $i18n.t('settings.personal.setup.title'),
+			searchPrefixes: ['settings.personal.vibes.sections.install', 'settings.personal.vibes.sections.import', 'settings.personal.vibes.setup']
+		},
+		{
+			id: 'themes',
+			titleKey: 'settings.personal.themes.title',
+			title: $i18n.t('settings.personal.themes.title'),
+			searchPrefixes: ['settings.personal.vibes.sections.theme', 'settings.personal.vibes.theme']
 		},
 		{
 			id: 'audio',
@@ -751,6 +768,32 @@
 								<Sparkles className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.vibes.title')}</span>
 							</button>
+						{:else if tabId === 'setup'}
+							<button
+								role="tab"
+								aria-controls="tab-setup"
+								aria-selected={selectedTab === 'setup'}
+								class={tabButtonClass(selectedTab === 'setup')}
+								on:click={() => {
+									selectTab('setup');
+								}}
+							>
+								<Wrench className="size-3.5" strokeWidth="2" />
+								<span>{$i18n.t('settings.personal.setup.title')}</span>
+							</button>
+						{:else if tabId === 'themes'}
+							<button
+								role="tab"
+								aria-controls="tab-themes"
+								aria-selected={selectedTab === 'themes'}
+								class={tabButtonClass(selectedTab === 'themes')}
+								on:click={() => {
+									selectTab('themes');
+								}}
+							>
+								<AdjustmentsHorizontal className="size-3.5" strokeWidth="2" />
+								<span>{$i18n.t('settings.personal.themes.title')}</span>
+							</button>
 						{:else if tabId === 'audio'}
 							<button
 								role="tab"
@@ -933,6 +976,10 @@
 					{saveSettings}
 					onSave={() => toast.success($i18n.t('Settings saved successfully!'))}
 				/>
+			{:else if selectedTab === 'setup'}
+				<SetupTab {saveSettings} on:save={() => toast.success($i18n.t('Settings saved successfully!'))} />
+			{:else if selectedTab === 'themes'}
+				<ThemesTab {saveSettings} on:save={() => toast.success($i18n.t('Settings saved successfully!'))} />
 			{:else if selectedTab === 'audio'}
 				<Audio
 					{saveSettings}
