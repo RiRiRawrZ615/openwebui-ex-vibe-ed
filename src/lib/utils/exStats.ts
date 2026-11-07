@@ -186,42 +186,88 @@ export function liveStats(
  */
 export type StatChip = { label: string; value: string; title: string };
 
+// ---------------------------------------------------------------------------
+// Display formatting
+//
+// Every value below arrives from the backend as a raw JS number, and raw numbers are not
+// presentable. `String(44.833333333333336)` prints the full float, and `String(124243)`
+// prints an unreadable digit run. Both were being rendered verbatim, which is exactly the
+// kind of thing that reads as unfinished.
+//
+// Three shapes, three rules:
+//   counts  - grouped, because a token count is read as a magnitude
+//   rates   - one decimal place, because false precision on a moving average is noise
+//   seconds - one decimal place, and never a bare integer, so 12.0s does not become 12s
+// Nothing here rounds a value to zero, because a rendered "0"/s next to visible output
+// looks like a bug rather than a small number.
+// ---------------------------------------------------------------------------
+
+export function groupDigits(n: number): string {
+	return Math.round(n).toLocaleString('en-US');
+}
+
+function oneDecimal(n: number): string {
+	if (!Number.isFinite(n)) return '-';
+	if (n === 0) return '0';
+	const rounded = Math.round(n * 10) / 10;
+	// Small non-zero values would round to 0.0 and read as broken. Show the smallest
+	// representation that is still honest.
+	if (rounded === 0) return n < 0.1 ? '<0.1' : '0.1';
+	return rounded.toFixed(1);
+}
+
 export function statChips(stats: Stats, approximate: boolean): StatChip[] {
 	const chips: StatChip[] = [];
 
 	if (approximate) {
 		if (stats['tokens'] !== undefined)
-			chips.push({ label: 'tok', value: `~${stats['tokens']}`, title: 'Estimated tokens generated so far' });
+			chips.push({
+				label: 'tok',
+				value: `~${groupDigits(stats['tokens'])}`,
+				title: 'Estimated tokens generated so far'
+			});
 	} else if (stats['output_tokens'] !== undefined) {
-		chips.push({ label: 'out', value: String(stats['output_tokens']), title: 'Tokens generated' });
+		chips.push({
+			label: 'out',
+			value: groupDigits(stats['output_tokens']),
+			title: 'Tokens generated'
+		});
 	}
 
 	if (stats['input_tokens'] !== undefined)
-		chips.push({ label: 'in', value: String(stats['input_tokens']), title: 'Prompt tokens sent' });
+		chips.push({
+			label: 'in',
+			value: groupDigits(stats['input_tokens']),
+			title: 'Prompt tokens sent'
+		});
 
 	if (stats['cached_tokens'])
 		chips.push({
 			label: 'cache',
-			value: String(stats['cached_tokens']),
+			value: groupDigits(stats['cached_tokens']),
 			title: 'Prompt tokens served from the KV cache'
 		});
 
 	if (stats['tokens_per_second'])
 		chips.push({
 			label: 'tok/s',
-			value: String(stats['tokens_per_second']),
+			value: oneDecimal(stats['tokens_per_second']),
 			title: approximate ? 'Current arrival rate, estimated' : 'Generation rate reported by the backend'
 		});
 
 	if (stats['prompt_per_second'])
 		chips.push({
 			label: 'prefill',
-			value: String(stats['prompt_per_second']),
+			value: oneDecimal(stats['prompt_per_second']),
 			title: 'Prompt processing rate'
 		});
 
 	if (stats['wall_seconds'])
-		chips.push({ label: 't', value: `${stats['wall_seconds']}s`, title: 'Total generation time' });
+		chips.push({
+			label: 't',
+			value: `${oneDecimal(stats['wall_seconds'])}s`,
+			title: 'Total generation time'
+		});
 
 	return chips;
 }

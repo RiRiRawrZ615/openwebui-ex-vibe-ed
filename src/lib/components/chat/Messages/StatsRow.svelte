@@ -14,7 +14,7 @@ During streaming the numbers are estimates from a character heuristic and are ma
 leading tilde. Once the provider sends its usage block they are replaced with real figures.
 -->
 <script lang="ts">
-	import { statChips, type Stats } from '$lib/utils/exStats';
+	import { statChips, groupDigits, type Stats } from '$lib/utils/exStats';
 
 	export let stats: Stats = {};
 	export let approximate = false;
@@ -47,7 +47,7 @@ leading tilde. Once the provider sends its usage block they are replaced with re
 				title="Estimated size of the message list sent to the model. Excludes the system prompt and tool schemas."
 			>
 				<span class="text-gray-400 dark:text-gray-500">window</span>
-				<span class="text-gray-600 dark:text-gray-300">{windowTokens}</span>
+				<span class="text-gray-600 dark:text-gray-300">{groupDigits(windowTokens)}</span>
 			</span>
 		{/if}
 
