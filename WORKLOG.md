@@ -659,7 +659,7 @@ The reason nothing caught it: `test_ex_stats.py` compares extracted values by re
 
 ### Dev launcher, `ai-launchers/owv-dev.sh`
 
-Three guarantees, all asserted in `test_owv_dev_launcher.py` (27 checks):
+Three guarantees, all asserted in `test_owv_dev_launcher.py` (29 checks):
 
 1. never writes to the live data dir. The production launcher points DATA_DIR at
    `~/.open-webui-llamacpp-safe-v4` on purpose. The dev instance gets a snapshot copy via
@@ -681,9 +681,21 @@ runtime dir and `kill-owv` could kill the dev instance.
 
 ### Harness
 
-1008 asserted checks, 19 failed: settings mirror 1, theme 2, theme mirror 3, launcher 13.
+1010 asserted checks, 19 failed: settings mirror 1, theme 2, theme mirror 3, launcher 13.
 No new failures. `run_all_tests.py` now runs through the fork venv, because system python has no
 typer and `test_ex_rag.py` reported a false failure while passing 37 checks under the fork venv.
 
 Launchers and the harness are not in a git repo, so those fixes are disk-only and cannot be pushed
 to the fork.
+
+Two things found in the dev launcher itself while verifying it:
+
+- `--shell` printed the env block but ran the database copy first, so it created a 584 MB dev
+  database while its own usage text promised it writes nothing. The check that should have caught
+  it asserted only the output shape, so it passed. Now `--shell` is a no-write path and the test
+  asserts that nothing is created, not just that the output looks right.
+- `--shell` also printed a copy line, which contradicts "print the environment block only". The
+  reporting belongs to `--dry-run`; `--shell` prints the block and nothing else.
+
+A stray dev database created by the first version was removed. The live database was never touched;
+its mtime is 17:15 and the run that created the copy was 17:30.
