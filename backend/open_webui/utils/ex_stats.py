@@ -91,20 +91,29 @@ def generation_stats(usage: dict | None) -> dict:
     if in_tokens is not None:
         out["input_tokens"] = int(in_tokens)
     if cached is not None:
+        # Cached tokens cannot exceed the prompt they were read from. merge_usage accumulates the
+        # per-call cache figure across tool rounds, so the same reused prefix is counted several
+        # times and the chip can read larger than the prompt it belongs to. Clamping keeps the
+        # reading honest without changing what the merge stored.
+        if in_tokens:
+            cached = min(cached, in_tokens)
         out["cached_tokens"] = int(cached)
 
-    tps = None
-    # ollama-style durations are microseconds
-    eval_dur = _num(usage.get("eval_duration"))
-    if eval_dur and eval_dur > 0 and out_tokens:
-        tps = out_tokens / (eval_dur / MICROSECONDS)
-    # llama.cpp t_eval is milliseconds
+    # A rate is a measurement of one call, so a value the engine already computed is authoritative
+    # and must beat anything derived here. Deriving first is what made the tok/s chip read wrong on
+    # an agentic turn: out_tokens is cumulative across rounds while t_eval/eval_duration describe the
+    # last call only, so the derived number is the turn total divided by one round's time.
+    tps = _num(usage.get("tokens_per_second")) or _num(usage.get("eval_ts")) or _num(usage.get("predicted_per_second"))
     if tps is None:
+        # ollama-style durations are microseconds
+        eval_dur = _num(usage.get("eval_duration"))
+        if eval_dur and eval_dur > 0 and out_tokens:
+            tps = out_tokens / (eval_dur / MICROSECONDS)
+    if tps is None:
+        # llama.cpp t_eval is milliseconds
         t_eval = _num(usage.get("t_eval"))
         if t_eval and t_eval > 0 and out_tokens:
             tps = out_tokens / (t_eval / MILLISECONDS)
-    # already-computed field from some builds
-    tps = tps or _num(usage.get("tokens_per_second")) or _num(usage.get("eval_ts"))
     if tps is not None:
         out["tokens_per_second"] = round(tps, 1)
 

@@ -52,28 +52,34 @@ export function generationStats(usage: Record<string, unknown> | undefined | nul
 
 	if (outTokens !== null) out['output_tokens'] = Math.round(outTokens);
 	if (inTokens !== null) out['input_tokens'] = Math.round(inTokens);
-	if (cached !== null) out['cached_tokens'] = Math.round(cached);
+	if (cached !== null) {
+		// Same clamp as ex_stats.py. merge_usage accumulates the per-call cache figure across tool
+		// rounds, so the same reused prefix is counted more than once and the chip can read larger
+		// than the prompt it was read from.
+		out['cached_tokens'] = Math.round(inTokens ? Math.min(cached, inTokens) : cached);
+	}
 
-	let tps: number | null = null;
+	// llama.cpp and Strata both report a ready-made rate. That field describes one call and is
+	// authoritative, so it has to come first. The order here used to be the other way round, which is
+	// why tok/s read wrong on an agentic turn: out_tokens is the turn total across tool rounds while
+	// t_eval and eval_duration describe the last call only, so a derived figure divides a turn total
+	// by a single round's time.
+	let tps: number | null =
+		num(usage['tokens_per_second']) ??
+		num(usage['predicted_per_second']) ??
+		num(usage['eval_ts']);
 
 	// ollama-style durations are microseconds.
-	const evalDur = num(usage['eval_duration']);
-	if (evalDur && evalDur > 0 && outTokens) tps = outTokens / (evalDur / MICROSECONDS);
+	if (tps === null) {
+		const evalDur = num(usage['eval_duration']);
+		if (evalDur && evalDur > 0 && outTokens) tps = outTokens / (evalDur / MICROSECONDS);
+	}
 
 	// llama.cpp t_eval is milliseconds.
 	if (tps === null) {
 		const tEval = num(usage['t_eval']);
 		if (tEval && tEval > 0 && outTokens) tps = outTokens / (tEval / MILLISECONDS);
 	}
-
-	// llama.cpp and Strata both report a ready-made rate. preferred_per_second is the field
-	// llama-server emits in `timings`; tokens_per_second is what an OpenAI-compatible shim
-	// usually forwards. Either is authoritative and beats a derived figure.
-	tps =
-		tps ??
-		num(usage['tokens_per_second']) ??
-		num(usage['predicted_per_second']) ??
-		num(usage['eval_ts']);
 
 	if (tps !== null) out['tokens_per_second'] = Math.round(tps * 10) / 10;
 

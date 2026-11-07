@@ -236,11 +236,11 @@
 	};
 
 	onMount(() => {
-		// Probe first, so a machine that already has the engines shows that immediately and needs no
-		// action. The setup steps only appear for what is actually missing.
-		probe();
+		// probe() belongs to SetupTab and the theme report belongs to ThemesTab, so neither exists in
+		// this component any more. They were left here after the tab split, and that is what broke the
+		// tab: onMount threw on the first undefined call, every refresh below it never ran, and the
+		// loading gate never released, so the tab showed a spinner forever and nothing could be saved.
 		refresh();
-		refreshTheme();
 		refreshRecovery();
 		refreshModules();
 		refreshCluster();
