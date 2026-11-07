@@ -110,6 +110,7 @@ from open_webui.utils.ex_wiring import (
     rollover_index_block,
 )
 from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
+from open_webui.utils.ex_turns import buffer_for
 from open_webui.utils.files import (
     convert_markdown_base64_images,
     get_file_url_from_base64,
@@ -4403,6 +4404,9 @@ async def streaming_chat_response_handler(response, ctx):
             tag_scan_positions = {}
             tag_boundary_positions = {}
             response_stream_task_id = metadata.get('task_id') or metadata.get('message_id')
+            # Crash survival for the turn. Throttled writes, see ex_turns. Gated on save_to_chat
+            # so an unsaved call does not write a buffer nobody will read.
+            turn_buffer = buffer_for(metadata.get('chat_id'), metadata.get('message_id')) if save_to_chat else None
 
             def tag_output_handler(content_type, tags, output):
                 """
@@ -5552,6 +5556,8 @@ async def streaming_chat_response_handler(response, ctx):
 
                                         # closure-cell str += recopies per chunk; append + join once at read is O(n)
                                         content_parts.append(value)
+                                        if turn_buffer is not None:
+                                            turn_buffer.record(value)
 
                                         # Continue the open tag block so its start tag is not re-detected on each chunk.
                                         last_item = output[-1] if output else None
@@ -6772,6 +6778,8 @@ async def streaming_chat_response_handler(response, ctx):
                         },
                     )
 
+                if turn_buffer is not None:
+                    turn_buffer.finish()
                 await clear_response_stream(request.app.state.redis, response_stream_task_id)
                 await publish_chat_finished_event(
                     request,
@@ -6837,6 +6845,8 @@ async def streaming_chat_response_handler(response, ctx):
                             },
                         )
                     await clear_response_stream(request.app.state.redis, response_stream_task_id)
+                    if turn_buffer is not None:
+                        turn_buffer.finish(interrupted=True)
 
                 try:
                     await asyncio.shield(save_cancelled_state())

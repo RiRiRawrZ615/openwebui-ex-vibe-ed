@@ -26,6 +26,7 @@ from open_webui.utils.ex_discover import DISCOVERABLE, manual_select, probe_all,
 from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
+from open_webui.utils.ex_turns import interrupted_turns, read_turn, state_dir
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_rollover import (
     FOLDER,
@@ -100,6 +101,46 @@ async def ex_journal_read(
         return {"path": str(path), "content": read_journal(path, entry_id=entry, needle=needle, limit=limit)}
     return {"path": str(path), "entries": journal_index(path, limit=limit)}
 
+
+@router.get("/turns")
+async def ex_turns_read(
+    chat_id: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=100),
+    user=Depends(get_current_user),
+):
+    """Buffers with no .done marker, which are the turns a crash or a cancel left behind.
+
+    Read-only. For a turn that never reached the chat record the buffer is the only record,
+    so this is what a client reads to offer a lost turn back.
+    """
+    found = interrupted_turns(chat_id)[:limit]
+    return {
+        "state_dir": str(state_dir()),
+        "count": len(found),
+        "turns": [
+            {
+                "chat_id": item["chat_id"],
+                "message_id": item["message_id"],
+                "lines": item["lines"],
+                "bytes": item["bytes"],
+                "age_seconds": round(item["age_seconds"], 1),
+                "text": read_turn(item["chat_id"], item["message_id"]).get("text", ""),
+            }
+            for item in found
+        ],
+    }
+
+
+@router.get("/turns/{chat_id}/{message_id}")
+async def ex_turn_one(chat_id: str, message_id: str, user=Depends(get_current_user)):
+    """One buffer, reconstructed. 404 when the turn finished and the buffer was dropped."""
+    if not is_saved_chat_id(chat_id):
+        raise HTTPException(status_code=404, detail="chat not found")
+
+    turn = read_turn(chat_id, message_id)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="no buffer for this turn")
+    return turn
 
 def _allowed_roots() -> list[Path]:
     """Roots the model check may read.
