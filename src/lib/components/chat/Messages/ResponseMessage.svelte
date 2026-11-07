@@ -68,6 +68,7 @@
 	import { estimateMessagesTokens } from '$lib/utils/contextUsage';
 	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { ArrivalRate, formatStatsLine, generationStats, liveStats } from '$lib/utils/exStats';
+	import { engineChips, engineStatus } from '$lib/utils/engineStatus';
 	// estimateTokens lives in contextUsage.ts, not exStats.ts. It was called at the arrival
 	// sampler without being imported, which threw a ReferenceError on every streaming render
 	// and took the whole message component, and therefore the turn, down with it.
@@ -241,6 +242,15 @@
 	// no message text yet, so measuring only visibleResponseContent gave the sampler nothing to
 	// divide: the row showed a token count, the window, and no rate, because the rate had no signal.
 	// Rendering still uses visibleResponseContent, so thinking blocks are not moved into the reply.
+
+	// Engine figures come from the log the launcher writes, through the route, at a slow cadence (the
+	// util caches with a minimum interval). They are rendered as their own chips because they are not
+	// the same measurement as the arrival rate above.
+	let engineValue = null;
+	$: if (message && message.role === 'assistant' && exSettings.engineStatus) {
+		engineValue = engineStatus(exSettings, localStorage.token);
+	}
+	$: exEngineChips = engineChips(engineValue, exSettings);
 	$: liveTokenCount =
 		estimateTokens(visibleResponseContent) + estimateTokens(getReasonedText(message?.output));
 
@@ -1023,9 +1033,9 @@
 							<!-- Stats belong under the answer, not above it. Above, the row pushed the text
 							     down a line and read as a header for the reply instead of a note about it. -->
 							{#if exLive && hasResponseContent}
-								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} />
+								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} engineChips={exEngineChips} />
 							{:else if exStats && message.done && !message.error}
-								<StatsRow stats={exStats} approximate={false} />
+								<StatsRow stats={exStats} approximate={false} engineChips={exEngineChips} />
 							{/if}
 						</div>
 					</div>

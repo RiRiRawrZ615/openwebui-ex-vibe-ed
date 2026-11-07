@@ -72,6 +72,16 @@ DEFAULTS = {
     "reasoningOnDemand": True,     # ids are attached to sections so a block can be pulled back
     "reasoningExcerptChars": 160,  # length of one index line
     "rolloverCarryOnce": True,     # a carry pointer is consumed the first time a new chat reads it
+    # Engine status, read from the log the launcher already writes. The figure is the engine's own and
+    # is labelled as such: the live row's rate is a windowed arrival estimate, and the two are not the
+    # same measurement on a turn with tool calls.
+    "engineStatus": True,
+    "engineStatusLines": 400,      # tail window, so a growing log is not re-read whole
+    "engineStatusEta": True,       # (budget - tokens) / speed, seconds only
+    "engineStatusMaxAge": 30,      # seconds; past this the log is reported as stale, not as live
+    # Empty resolves to the launcher's engine log. Kept as its own line because the mirror test
+    # compares parsed values, and an inline comment on a string default reads as part of the value.
+    "engineLogPath": "",
     # Mid generation steering. The stock queue waits for generation to finish, so it is
     # send_after. The redirect form is injection at the next iteration boundary.
     "steeringQueue": True,

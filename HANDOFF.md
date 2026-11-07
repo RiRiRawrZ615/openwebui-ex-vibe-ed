@@ -258,3 +258,41 @@ rule written down in code: the window shaping still trims, but nothing rewrites 
 Still open: the settings tab has no control for the new keys, so they run at their defaults until a
 control is added; the test harness's three theme failures and the launcher failures are the ones
 documented earlier, not new ones.
+
+## 5d. Engine status from the log, and what is still wrong about tok/s. 2026-11-07.
+
+Built: `utils/ex_engine_log.py`, stdlib only. It reads the log the launcher writes, never the engine.
+Line shapes actually present in the log:
+
+    [strata] thinking: 1220 of budget 126258 (max 126258) tokens, 47.2 tok/s, 263 s
+    [strata] writing a tool call: run_command: 932 of max 116842 tokens, 48.4 tok/s, 22 s
+    [strata] reading the prompt: 145,289 of 145,294 tokens, 2 s so far
+    [strata] done: 979 tokens in 23 s (48.8 tok/s) (stop, cancel=False)
+    [strata] done: 0 tokens in 96 s (no speed) (cancel, cancel=True)
+
+Parse rules that matter: a line that prints (no speed) produces no speed and therefore no ETA; the
+word after "of" is optional on a prefill line; numbers can be comma-grouped; the tail is read, not the
+whole file; the age of the file is part of the answer, so a log that stopped updating is reported as
+stale rather than as current.
+
+ETA is arithmetic on the line: (budget - tokens) / speed, seconds only. No model call.
+
+The label separation is the part not to lose. The row already shows a measured arrival rate, which is
+a frontend window over the last ten seconds. The engine line is the engine's own decode speed. On a
+turn with tool calls they can be far apart, so they are rendered as separate chips and the engine chip
+says where it came from.
+
+Still wrong about tok/s, in the order it bites:
+1. The measured rate says nothing until the first chunk lands, so the prefill period has no rate at all
+   even though the engine is busy. The log line covers that period, which is why the engine chip exists.
+2. `wall_seconds` covers generation only. Prefill is reported separately, so a turn that spent most of
+   its time reading the prompt shows a small wall figure next to a large one.
+3. The backend mirror only takes effect after a restart through owv.sh. The frontend half is live after
+   a reload because the row is computed there.
+4. `usage` for an agentic turn mixes scopes, so a rate computed from it describes the turn rather than
+   the reply.
+5. The new settings keys have no control in the tab yet, so engine status runs at its defaults.
+
+Tests: test_ex_engine_log.py 22 checks, test_ex_wiring.py 30, test_ex_e2e.py 47, test_ex_rollover.py 23,
+test_ex_stats.py 33. Full harness 799 checks; the failures are the documented theme, theme-mirror,
+settings-array, and launcher ones.

@@ -108,6 +108,35 @@ export type ExManualSelection = {
 export const getExStatus = async (token: string): Promise<ExStatusResponse | { error: string }> =>
 	jsonRequest('/ex/status', token);
 
+export type EngineStatusLine = {
+	phase: string;
+	tool?: string;
+	tokens?: number;
+	budget?: number;
+	speed?: number;
+	no_speed?: boolean;
+	elapsed?: number;
+	line: string;
+};
+
+export type EngineStatusResponse = {
+	source: string;
+	path?: string;
+	live: boolean;
+	age_seconds?: number | null;
+	status?: EngineStatusLine | null;
+	last_done?: EngineStatusLine | null;
+	lines_read?: number;
+	eta?: { remaining_tokens: number; seconds: number; based_on: string } | null;
+	error?: string;
+};
+
+// Engine status comes from the log the launcher writes, not from the engine. The figures are the
+// engine's own, and the response keeps its source so a frontend arrival estimate and an engine rate
+// cannot be read as the same number.
+export const getExEngineStatus = async (token: string): Promise<EngineStatusResponse | { error: string }> =>
+	jsonRequest('/ex/engine', token);
+
 export const getExBackendCheck = async (
 	token: string,
 	modelPath: string

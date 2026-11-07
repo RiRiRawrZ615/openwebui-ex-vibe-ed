@@ -39,6 +39,12 @@ from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats
 from open_webui.utils.ex_rag import ChatMemory, should_retrieve
+from open_webui.utils.ex_engine_log import (
+    eta as engine_eta,
+    parse_line as engine_parse_line,
+    read_status as engine_read_status,
+    resolve_log_path as engine_log_path,
+)
 from open_webui.utils.ex_rollover import (
     branch_order,
     index_block,
@@ -171,6 +177,26 @@ def record_saved_message(
     except Exception:
         log.exception("EX rolling context write failed")
         return {"written": False, "reason": "error"}
+
+
+def engine_status(settings: dict, data_dir: Path | str = "") -> dict:
+    """Engine status from the log the launcher writes.
+
+    Two labels are kept apart here on purpose. The live row shows a measured arrival rate, which is a
+    frontend window over the last ten seconds. The log carries the engine's own speed, which is what the
+    ETA is built from. Presenting one as the other would make a tool-call turn look like a decoding turn.
+    """
+    if not settings.get("engineStatus"):
+        return {"source": "engine log", "live": False, "status": None, "eta": None}
+
+    try:
+        path = engine_log_path(settings, str(data_dir or ""))
+        status = engine_read_status(path, settings.get("engineStatusLines"), settings.get("engineStatusMaxAge"))
+        status["eta"] = engine_eta(status.get("status"), settings)
+        return status
+    except Exception:
+        log.exception("EX engine status read failed")
+        return {"source": "engine log", "live": False, "status": None, "eta": None, "error": "read failed"}
 
 
 def drain_steering(messages: list[dict], chat_id: str, settings: dict, data_dir: Path | str, *, turn_open: bool = True) -> dict:

@@ -40,6 +40,7 @@ from open_webui.utils.ex_rollover import (
 )
 from open_webui.utils.ex_steering import normalize_chat_id
 from open_webui.models.chats import Chats
+from open_webui.utils.ex_wiring import engine_status
 from open_webui.tools import builtin_registry
 from open_webui.utils.ex_wiring import (
     chat_memory_status,
@@ -439,6 +440,21 @@ async def ex_rollover_now(chat_id: str = Query(...), user=Depends(get_current_us
     )
     carry = mark_carry(DATA_DIR, key, user_id)
     return {"report": report, "carry": carry}
+
+
+@router.get("/engine")
+async def ex_engine(user=Depends(get_current_user)):
+    """Engine status from the log the launcher writes, never from the engine itself.
+
+    The figures are the engine's own and come back with their source, so a windowed arrival estimate on
+    the frontend and the engine's decode speed cannot be read as the same measurement. A log that
+    stopped updating is reported as stale rather than as current.
+    """
+    settings = resolve_ex_settings(user)
+    if not settings.get("engineStatus"):
+        raise HTTPException(status_code=403, detail="engine status is disabled")
+
+    return engine_status(settings, str(DATA_DIR))
 
 
 @router.post("/steering")

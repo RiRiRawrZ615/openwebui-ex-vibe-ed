@@ -19,11 +19,15 @@ leading tilde. Once the provider sends its usage block they are replaced with re
 	export let stats: Stats = {};
 	export let approximate = false;
 	export let windowTokens: number | undefined = undefined;
+	// Engine figures from the log, kept as a separate list because they are a different measurement from
+	// the ones above. A windowed arrival rate and the engine's decode speed are not the same thing, and
+	// folding them into one number would hide which one is which.
+	export let engineChips: { label: string; value: string; title: string }[] = [];
 
 	// The window figure is only meaningful during a turn, when the caller is tracking the
 	// message-list estimate. Showing it on a finished message would imply the window is still
 	// moving.
-	$: chips = statChips(stats, approximate);
+	$: chips = [...statChips(stats, approximate), ...engineChips];
 </script>
 
 {#if chips.length}
