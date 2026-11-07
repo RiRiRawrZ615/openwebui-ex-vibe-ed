@@ -97,7 +97,7 @@
 			.split(',')
 			.map((s) => s.trim())
 			.filter(Boolean);
-		const res = await getExInstallPlan(localStorage.token, wanted, false);
+		const res = await getExInstallPlan(localStorage.token, wanted);
 		if ('error' in res) {
 			toast.error(`${res.error}`);
 			plan = null;
@@ -127,12 +127,12 @@
 
 	const runImport = async (dryRun: boolean) => {
 		importing = true;
-		const res = await runExImport(
-			localStorage.token,
-			importSource || undefined,
-			importTarget || undefined,
-			importForce
-		);
+		const res = await runExImport(localStorage.token, {
+			source: importSource,
+			target: importTarget,
+			dryRun,
+			force: !dryRun && importForce
+		});
 		if ('error' in res) {
 			importReport = { error: `${res.error}` } as ExImportReport;
 		} else {
