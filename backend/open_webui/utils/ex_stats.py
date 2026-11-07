@@ -103,7 +103,14 @@ def generation_stats(usage: dict | None) -> dict:
     # and must beat anything derived here. Deriving first is what made the tok/s chip read wrong on
     # an agentic turn: out_tokens is cumulative across rounds while t_eval/eval_duration describe the
     # last call only, so the derived number is the turn total divided by one round's time.
-    tps = _num(usage.get("tokens_per_second")) or _num(usage.get("eval_ts")) or _num(usage.get("predicted_per_second"))
+    # Engine-computed rates first. The order was tokens_per_second, eval_ts, predicted_per_second,
+    # which put an ollama field ahead of the llama.cpp field that Strata actually sends, so the two
+    # halves of the stats code disagreed about which number was authoritative.
+    tps = (
+        _num(usage.get("tokens_per_second"))
+        or _num(usage.get("predicted_per_second"))
+        or _num(usage.get("eval_ts"))
+    )
     if tps is None:
         # ollama-style durations are microseconds
         eval_dur = _num(usage.get("eval_duration"))
@@ -117,10 +124,23 @@ def generation_stats(usage: dict | None) -> dict:
     if tps is not None:
         out["tokens_per_second"] = round(tps, 1)
 
+    # Prefill is reported separately from generation, and on a long context it is the number that
+    # explains a slow turn. The TS mirror already had this; the Python reference did not, which is a
+    # divergence between the two halves of the same rule.
+    prefill = _num(usage.get("prompt_per_second")) or _num(usage.get("prompt_ts"))
+    if prefill is not None:
+        out["prompt_per_second"] = round(prefill, 1)
+
     total_dur = _num(usage.get("total_duration")) or _num(usage.get("t"))
     if total_dur is not None:
         secs = total_dur / MICROSECONDS if total_dur > 10 * MILLISECONDS else total_dur / MILLISECONDS
         out["wall_seconds"] = round(secs, 1)
+    else:
+        # llama.cpp timings report milliseconds per phase and no total duration, so the wall chip
+        # was missing on every Strata turn. The engine's own rate is still the headline number.
+        predicted_ms = _num(usage.get("predicted_ms"))
+        if predicted_ms is not None and predicted_ms > 0:
+            out["wall_seconds"] = round(predicted_ms / MILLISECONDS, 1)
 
     return out
 

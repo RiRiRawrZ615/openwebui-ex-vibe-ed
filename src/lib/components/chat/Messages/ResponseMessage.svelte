@@ -82,7 +82,7 @@
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import MCPApp from '$lib/components/chat/Messages/MCPApp.svelte';
 	import OutputEditView from './OutputEditView.svelte';
-	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
+	import { getOutputText, getReasonedText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
 
 	interface MessageType {
 		user_id?: string;
@@ -237,6 +237,13 @@
 	let liveElapsedSec = 0;
 	let liveRate = 0;
 
+	// Measured tokens, which is not the same as rendered tokens. A turn that is still thinking has
+	// no message text yet, so measuring only visibleResponseContent gave the sampler nothing to
+	// divide: the row showed a token count, the window, and no rate, because the rate had no signal.
+	// Rendering still uses visibleResponseContent, so thinking blocks are not moved into the reply.
+	$: liveTokenCount =
+		estimateTokens(visibleResponseContent) + estimateTokens(getReasonedText(message?.output));
+
 	$: if (message && message.role === 'assistant' && !message.done && exSettings.liveStats) {
 		if (liveStartMs === null) {
 			liveStartMs = message.timestamp ?? Date.now();
@@ -245,7 +252,7 @@
 		liveElapsedSec = Math.max(0, (Date.now() - liveStartMs) / 1000);
 		// Feeds the trailing window. Called on every content change, which is what makes the
 		// figure instantaneous rather than a lifetime average.
-		liveRate = exArrival.record(estimateTokens(visibleResponseContent));
+		liveRate = exArrival.record(liveTokenCount);
 	}
 	$: if (message?.done) {
 		liveStartMs = null;
@@ -257,7 +264,7 @@
 	$: exWindowTokens = message ? estimateMessagesTokens(createMessagesList(history, message.id)) : 0;
 	$: exLive =
 		exSettings.liveStats && message?.role === 'assistant' && !message.done
-			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens, liveRate)
+			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens, liveRate, liveTokenCount)
 			: null;
 	$: exStats = message?.usage ? generationStats(message.usage) : null;
 

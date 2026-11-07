@@ -530,6 +530,21 @@ export function getOutputText(output?: OutputItem[] | null): string {
 		.join('\n');
 }
 
+/**
+ * Streaming text used for measurement only, never for rendering.
+ *
+ * getOutputText filters to type 'message', so a turn that is still thinking contributes nothing.
+ * The arrival sampler and the live token estimate both read this, which is why the live row could
+ * show a token count of zero while a thinking block was visibly growing on screen.
+ */
+export function getReasonedText(output?: OutputItem[] | null): string {
+	return (output ?? [])
+		.filter((item) => item?.type === 'reasoning')
+		.map(getReasoningText)
+		.filter((text) => text.trim())
+		.join('\n');
+}
+
 function appendDelta(current: unknown, delta: unknown): unknown {
 	if (typeof current === 'string' || typeof delta === 'string') {
 		return `${current ?? ''}${delta ?? ''}`;

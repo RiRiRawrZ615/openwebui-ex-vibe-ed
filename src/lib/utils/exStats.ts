@@ -91,6 +91,13 @@ export function generationStats(usage: Record<string, unknown> | undefined | nul
 	if (totalDur !== null) {
 		const secs = totalDur > 10 * MILLISECONDS ? totalDur / MICROSECONDS : totalDur / MILLISECONDS;
 		out['wall_seconds'] = Math.round(secs * 10) / 10;
+	} else {
+		// llama.cpp reports timings as milliseconds, not a total duration, so the wall chip was
+		// silently missing on every Strata turn even though the rate chip was present.
+		const predictedMs = num(usage['predicted_ms']);
+		if (predictedMs !== null && predictedMs > 0) {
+			out['wall_seconds'] = Math.round((predictedMs / MILLISECONDS) * 10) / 10;
+		}
 	}
 
 	return out;
@@ -169,9 +176,13 @@ export function liveStats(
 	content: string,
 	elapsedSeconds: number,
 	windowTokens: number,
-	arrivalRate?: number
+	arrivalRate?: number,
+	tokenCount?: number
 ): { stats: Stats; line: string } {
-	const tokens = estimateTokens(content);
+	// tokenCount is the caller's measured count, and it has to include thinking. Counting only the
+	// rendered message text made a thinking turn read as zero tokens, so the rate had no signal to
+	// divide and the chip simply never appeared.
+	const tokens = tokenCount ?? estimateTokens(content);
 	const stats: Stats = { tokens, estimated_window_tokens: Math.max(0, Math.round(windowTokens)) };
 
 	// Prefer the trailing arrival rate. Fall back to the lifetime average only before the
