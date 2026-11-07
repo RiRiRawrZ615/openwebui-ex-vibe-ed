@@ -293,6 +293,7 @@ Still wrong about tok/s, in the order it bites:
    the reply.
 5. The new settings keys have no control in the tab yet, so engine status runs at its defaults.
 
-Tests: test_ex_engine_log.py 22 checks, test_ex_wiring.py 30, test_ex_e2e.py 47, test_ex_rollover.py 23,
+Tests: test_ex_engine_log.py 23 checks (the elapsed pattern originally only accepted the comma form, so
+a finished turn reported no elapsed time; the fixture check covers both shapes), test_ex_wiring.py 30, test_ex_e2e.py 47, test_ex_rollover.py 23,
 test_ex_stats.py 33. Full harness 799 checks; the failures are the documented theme, theme-mirror,
 settings-array, and launcher ones.

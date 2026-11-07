@@ -41,7 +41,10 @@ NUM = r"(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
 BUDGET = re.compile(rf"of\s+(?:budget|max|gen max)?\s*({NUM})")
 SPEED = re.compile(rf"({NUM}) tok/s")
 NO_SPEED = re.compile(r"\(no speed\)")
-ELAPSED = re.compile(rf"[ ,] ({NUM}) s(?: |$| so far$)")
+# Two shapes carry the elapsed time: "tokens, 47.2 tok/s, 263 s" on a running line and "406 tokens in
+# 12 s" on a completed one. A pattern that only accepted the comma form dropped elapsed for every
+# finished turn.
+ELAPSED = re.compile(rf"(?:[ ,]|in)\s+({NUM})\s+s(?:\b|$)")
 DONE_TOKENS = re.compile(rf"^({NUM}) tokens in")
 
 PHASES = ("thinking", "answering", "writing a tool call", "reading the prompt", "done")
