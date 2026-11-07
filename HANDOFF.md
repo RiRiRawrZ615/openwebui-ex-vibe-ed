@@ -297,3 +297,58 @@ Tests: test_ex_engine_log.py 23 checks (the elapsed pattern originally only acce
 a finished turn reported no elapsed time; the fixture check covers both shapes), test_ex_wiring.py 30, test_ex_e2e.py 47, test_ex_rollover.py 23,
 test_ex_stats.py 33. Full harness 799 checks; the failures are the documented theme, theme-mirror,
 settings-array, and launcher ones.
+
+## 5e. Notes for next time. Verbatim requirements, then what was checked so nobody re-guesses.
+
+Verbatim, as written:
+
+1. "we need to still fix the connections tab for users. it still shows tokenharbor which is no good, we
+   need to find how deepseek seemingly hardcoded that, restore the ability to add other connection
+   urls/expose them again even if we have to manually rewrite that."
+2. "in the now restored openwebvibes section, for the auto backend selection we need it to KILL strata if
+   a llama.cpp model is selected, and vice versa. same for bonsai. as if strata is still loaded and we
+   change to a llama model... you can imagine what happens."
+3. "wire the toks and token window stats to read logs for llama and bonsai normally to get their stats.
+   AND we need to have total SET context size window as a stat, maybe check from backend? so it would be
+   like insertctxsizehere/262144 for the total window (the one that goes up over time). same for prefill
+   that needs to be shown as well as showing WHEN the model is pre filling, how many chunks it is set to
+   and how far in chunking it is/ prompt size. unsure how to make the ui prettier, but functionality is
+   most important."
+4. "do a pass to see setup/install flows actually work, and for new user detection have them walk through
+   the setup. if any llama/strata/bonsai binaries detected then dont run setup. if detected open the setup
+   page and walk the user through it."
+5. "one final code pass to ensure everything works, then we make it universal so it will work on anyone's
+   machine (using that machine's username instead of 'amd'. hardcode removal) then its release 1.1 time.
+   the rpm containing the launcher scripts, all owv aliases from my system, and a --help flag for usage or
+   -h. the appimage obviously cant include help syntax (or maybe it can?)"
+
+Checked, so the next turn starts from facts:
+
+- tokenharbor is not hardcoded in the code. `grep -rn tokenharbor src backend` returns nothing across the
+  fork. It is stored data: the `config` row `openai.api_base_urls` holds
+  `["http://127.0.0.1:8004/v1", "http://192.168.1.37:8180/v1", "https://tokenharbor.ai/v1",
+  "https://api.groq.com/openai/v1"]`. The persisted row beats the environment, which is exactly what
+  `ai-launchers/owv-connections.sh` exists for (`show`, `apply`). So this is a stored row plus the UI gate,
+  not a rewrite.
+- The reported inability to add connections has a separate cause in that script's own comment: the
+  Connections tab renders nothing when `enable_direct_connections` is false, and the add modal probes
+  `/api/v1/models/list`. For this instance the key is not stored in the config table or in user settings,
+  so its effective value is the app default. `direct.enable` and `openai.enable` are both true.
+- Nothing in the fork can stop a process. There is no `ex_backend.py`; backend control lives in
+  `ai-launchers/owv.sh` and `ai-launchers/kill-owv`. Killing a backend because of a model name would cross
+  the standing rule in §1. The version that does not cross it: stop the unused process, keep the routing
+  decision owned by the connection the user picked, and never decide by model name inside the app.
+- `ex_engine_log.py` is Strata-shaped. It only accepts lines beginning with `[strata] `. llama.cpp and
+  bonsai write different shapes, so requirement 3 needs per-engine patterns before their logs can be read.
+  The engine chip is labelled engine, and that label must survive the extension.
+- A "total SET context window" stat needs the configured context, which the launcher knows as an argument
+  (`--ctx-size`) and the fork does not currently read. The row today shows the estimate against the budget
+  from the window shape, which is not the same number.
+- Prefill chunking is not observable from inside the app. The engine log prints prompt progress ("145,289 of
+  145,294 tokens, 2 s so far"), so chunk count and position have to come from the log, not from the request.
+- `owv.sh` has no usage or help block; grep for `--help`, `-h`, `usage()` returns nothing. The help flag for
+  1.1 is new work. The appimage is the same script, so a help flag works there if argument parsing is
+  reached before any launch path.
+- Portability: no hardcoded 'amd' in the fork's Python. `ex_engine_log.resolve_log_path` already uses
+  `Path.home()`. The machine name appears in the tests under `Code/vibe-ed`, which live separately and are
+  allowed to, and in the worklog header.
