@@ -47,6 +47,11 @@ export type ExSettings = {
 	reasoningOnDemand: boolean;
 	reasoningExcerptChars: number;
 	rolloverCarryOnce: boolean;
+	engineStatus: boolean;
+	engineStatusLines: number;
+	engineStatusEta: boolean;
+	engineStatusMaxAge: number;
+	engineLogPath: string;
 	steeringQueue: boolean;
 	drainSteeringAtBoundary: boolean;
 	steeringMode: string;
@@ -104,6 +109,11 @@ export const EX_DEFAULTS: ExSettings = {
 	reasoningOnDemand: true,
 	reasoningExcerptChars: 160,
 	rolloverCarryOnce: true,
+	engineStatus: true,
+	engineStatusLines: 400,
+	engineStatusEta: true,
+	engineStatusMaxAge: 30,
+	engineLogPath: "",
 	steeringQueue: true,
 	drainSteeringAtBoundary: true,
 	steeringMode: 'next_iteration',
