@@ -620,3 +620,70 @@ Final numbers for this session: 960 asserted checks, 19 failed (settings mirror 
 mirror 3, launcher 13). `test_ex_tools.py` is 21 checks including the new UI checks, `test_ex_turns.py`
 34, `test_ex_token_source.py` 21, `check_i18n_usage.py` clean. Build ran in a capped user cgroup and
 finished at 15:44; three new UI strings verified present in `build/_app/immutable`.
+
+## 2026-11-07, tool crash and the dev launcher (commits 760b00cda, 0c768c6f6)
+
+### The tool bug in the screenshot
+
+`get_builtin_tools` assigned `_web_search_builtin` inside the web_search gate (line 855) and read
+it in the bulk registration block (line 876), which runs unconditionally. When web search was off,
+or the model lacked the `web_search` capability, or the feature flag was false for the chat, the
+gate never ran and the read raised UnboundLocalError. That took down tool resolution for the whole
+request, so it looked like a tools bug while the trigger was a settings state unrelated to tools.
+
+Fixed by hoisting to a module constant `WEB_SEARCH_BUILTIN_SLUG`. Two proofs, not one:
+
+- symtable: before the change the name is function-local and assigned; after, it is a module
+  global with no assignment inside the function, and the read at 875 sits outside the gate.
+- runtime: the gate forced to False. The pre-fix shape raises, the fixed shape does not.
+
+`test_ex_tools.py` now runs the detection across the whole function rather than one name. It also
+carries an embedded positive control, because `Forks/vibe-ed.broken` was deleted mid-session and
+the control quietly dropped out of the run without failing anything. A control that can be deleted
+is not a control.
+
+Two false positives the guard had to be written around: for-loop targets are rebound every
+iteration, and a read inside the same conditional as the assignment is safe. Both were wrongly
+flagged in earlier drafts.
+
+### Your rollback was correct, and the committed version was not
+
+`8dfe3ed07` left `statChips` in `exStats.ts` with an unclosed brace. esbuild reports "Unexpected
+end of file" on the committed version and parses your working copy cleanly. The whole `src` tree is
+byte-identical between the fork and the backup you reconstructed, so nothing else was lost.
+
+The reason nothing caught it: `test_ex_stats.py` compares extracted values by regex, and
+`scripts/check_svelte.mjs` only compiles `.svelte` files. Nothing in the suite checked whether a
+`.ts` file is syntactically valid. New `test_ex_ts_parse.py` covers all 136 authored ts files.
+`.d.ts` is excluded as ambient declaration syntax, which is what produced the first false failure.
+
+### Dev launcher, `ai-launchers/owv-dev.sh`
+
+Three guarantees, all asserted in `test_owv_dev_launcher.py` (27 checks):
+
+1. never writes to the live data dir. The production launcher points DATA_DIR at
+   `~/.open-webui-llamacpp-safe-v4` on purpose. The dev instance gets a snapshot copy via
+   `sqlite3 .backup`, so a test run cannot mutate the database in use.
+2. never takes over a port. `OWV_TAKE_OVER_PORT=0` is forced, and a held dev port is refused.
+3. never re-execs into tmux. `OWV_NO_TMUX=1` is forced.
+
+Dev ports are 8090/8005/8009/8006 so both instances can be up at once. It is a wrapper, not a
+second implementation; all startup logic stays in `owv.sh`.
+
+One thing I initially got wrong and then fixed: I exported `OWV_REQUIRE_FRESH_BUILD` without
+anything reading it, which is the same "declared and never read" defect already flagged for
+`OWV_INSTALL`. It is now read in `owv.sh`, and a stale bundle causes a refusal in a dev run rather
+than a warning. A stale build is the most common reason a correct fix looks broken.
+
+`OWV_RUNTIME_DIR` is derived from XDG_CACHE_HOME in `owv.sh` and is not affected by `OWV_LOG_DIR`,
+so the dev instance had to override it explicitly. Otherwise dev pid files landed in the production
+runtime dir and `kill-owv` could kill the dev instance.
+
+### Harness
+
+1008 asserted checks, 19 failed: settings mirror 1, theme 2, theme mirror 3, launcher 13.
+No new failures. `run_all_tests.py` now runs through the fork venv, because system python has no
+typer and `test_ex_rag.py` reported a false failure while passing 37 checks under the fork venv.
+
+Launchers and the harness are not in a git repo, so those fixes are disk-only and cannot be pushed
+to the fork.
