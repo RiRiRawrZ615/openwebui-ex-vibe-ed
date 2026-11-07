@@ -91,7 +91,7 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
-from open_webui.utils.ex_context_window import shape_request
+from open_webui.utils.ex_context_window import detect_ceiling, shape_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_trim import gate_features
@@ -2385,10 +2385,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             **(form_data.get('params') or {}),
             **(metadata.get('params') or {}),
         }
+        # The hardcoded 262144 was the constant, not the engine. If the engine was started with a
+        # different window, every number downstream was measured against the wrong ceiling and the
+        # request went out over the engine's own limit, which the engine answers with a 400 rather
+        # than truncating. The handshake is what the launcher actually started the engine with.
         ex_window = (
             ex_params.get('exContextWindow')
             or ex_settings.get('contextWindow')
-            or 262144
+            or detect_ceiling(DATA_DIR)[0]
         )
         ex_block = '\n\n'.join(
             block['content'] for block in ex_context_blocks if block.get('content')
@@ -2400,6 +2404,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             max_tokens=(form_data.get('params') or {}).get('max_tokens'),
             keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
             context_block=ex_block if ex_settings.get('tailInject', True) else None,
+            data_dir=DATA_DIR,
         )
         form_data['messages'] = shaped
         metadata['exContextWindow'] = ex_shape

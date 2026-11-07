@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 from open_webui.models.chats import Chats
+from open_webui.env import DATA_DIR
 from open_webui.models.config import Config
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.ex_wiring import digest, resolve_ex_settings
@@ -314,16 +315,20 @@ def _build_context_usage(tokens: int, threshold: int) -> dict:
     # useful: 100 percent meant "we are about to summarize you", not "the window is full". The
     # percentage is now against the engine window, and the compaction point is reported
     # separately so both numbers are visible and neither is ambiguous.
+    source = 'default'
     try:
         from open_webui.utils.ex_context_window import (
             DEFAULT_CONTEXT_WINDOW,
+            detect_ceiling,
             resolve_budget,
         )
 
-        window = DEFAULT_CONTEXT_WINDOW
+        window, source = detect_ceiling(DATA_DIR)
         budget = resolve_budget(window)
     except Exception:
-        window = 262144
+        # A failed import still has to produce a number, so the fallback stays the measured
+        # constant and the source is labelled as such rather than reported as a detection.
+        window = DEFAULT_CONTEXT_WINDOW
         budget = max(1, window - 16384)
     return {
         'tokens': tokens,
@@ -331,6 +336,8 @@ def _build_context_usage(tokens: int, threshold: int) -> dict:
         'threshold': threshold,
         'percent': round((tokens / window) * 100) if window > 0 else 0,
         'window': window,
+        'window_source': source,
+        'over_window': max(0, tokens - window),
         'budget': budget,
         'compaction_at': threshold,
         'percent_of_budget': round((tokens / budget) * 100) if budget > 0 else 0,

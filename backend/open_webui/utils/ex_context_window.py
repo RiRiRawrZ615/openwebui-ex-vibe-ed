@@ -26,8 +26,15 @@ shapes what goes into one request.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
+from pathlib import Path
 from typing import Any, Iterable
+
+from open_webui.utils.ex_handshake import HANDSHAKE_NAME
+
+log = logging.getLogger(__name__)
 
 # The engine ceiling. The strata profile passes --max-context 262144, so this is measured
 # rather than aspirational. Kept as a constant because a wrong ceiling here means either a
@@ -128,8 +135,66 @@ def is_tool_call_message(message: dict) -> bool:
 # --------------------------------------------------------------------------------------
 
 
-def resolve_window(window: Any = None) -> int:
-    """The usable ceiling, clamped to something sane."""
+# Ceiling detection. DEFAULT_CONTEXT_WINDOW is a fallback, not the truth. The measured failure
+# was a request the engine refused outright: the estimate said the message list fit the budget
+# while the engine had been started with a different window, and the engine does not truncate.
+# So the ceiling has to come from what the engine actually started with, which the launcher
+# writes into the handshake file at startup.
+CEILING_CACHE_SECONDS = 300
+_ceiling_cache: dict[str, tuple[int, str, float]] = {}
+
+
+def detect_ceiling(data_dir: Path | str | None = None) -> tuple[int, str]:
+    """The engine's real ceiling, as (ceiling, source).
+
+    Source is 'handshake' when the launcher recorded a value, 'default' when nothing was found.
+    Cached per data dir for CEILING_CACHE_SECONDS because this is called on every request, and a
+    stale handshake is worse than a stale cache only when the engine was restarted with a new
+    window, which rewrites the file.
+    """
+    key = str(data_dir or "")
+    now = time.time()
+    hit = _ceiling_cache.get(key)
+    if hit and now - hit[3] < CEILING_CACHE_SECONDS:
+        # The cache is only valid while the handshake has not changed. A time-only cache would keep
+        # reporting the ceiling from before an engine restart, which is exactly the moment the value
+        # becomes wrong, so the file's mtime is part of the check.
+        try:
+            stamp = (Path(data_dir) / HANDSHAKE_NAME).stat().st_mtime if data_dir else None
+        except OSError:
+            stamp = None
+        if stamp == hit[2]:
+            return hit[0], hit[1]
+
+    value, source = DEFAULT_CONTEXT_WINDOW, "default"
+    stamp = None
+    if data_dir:
+        try:
+            from open_webui.utils.ex_handshake import load_handshake
+
+            record = load_handshake(data_dir)
+            params = record.get("params") if isinstance(record, dict) else None
+            candidate = params.get("ctx_size") if isinstance(params, dict) else None
+            if isinstance(candidate, (int, float)) and int(candidate) >= MIN_USEFUL_WINDOW:
+                value, source = int(candidate), "handshake"
+            stamp = (Path(data_dir) / HANDSHAKE_NAME).stat().st_mtime
+        except Exception:
+            # A missing or malformed handshake is normal on a machine that has not run the
+            # launcher yet, so this is not worth a traceback.
+            pass
+
+    value = max(MIN_USEFUL_WINDOW, value)
+    _ceiling_cache[key] = (value, source, stamp, now)
+    return value, source
+
+
+def resolve_window(window: Any = None, data_dir: Path | str | None = None) -> int:
+    """The usable ceiling, clamped to something sane.
+
+    With no explicit window, falls back to the detected engine ceiling rather than the constant.
+    """
+    if window is None:
+        return detect_ceiling(data_dir)[0]
     try:
         value = int(window)
     except (TypeError, ValueError):
@@ -474,6 +539,7 @@ def shape_request(
     max_tokens: Any = None,
     keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
     context_block: str | None = None,
+    data_dir: Path | str | None = None,
 ) -> tuple[list[dict], dict]:
     """The one function the middleware calls.
 
@@ -499,9 +565,34 @@ def shape_request(
         report["injection"] = injection
         report["tokens_after"] = messages_tokens(shaped)
     report["budget"] = budget
-    report["window"] = resolve_window(window)
+    detected, source = detect_ceiling(data_dir)
+    # An explicit window still wins for the budget, but the detected ceiling is reported next to
+    # it. When the two disagree the caller is being handed a window the engine cannot honour, and
+    # that is the case worth seeing rather than smoothing over.
+    report["window"] = resolve_window(window, data_dir)
+    report["ceiling"] = detected
+    report["ceiling_source"] = source
     report["headroom"] = max(0, budget - report["tokens_after"])
     report["percent"] = (
         round((report["tokens_after"] / budget) * 100) if budget > 0 else 0
     )
+
+    # The engine refuses an over-window request outright and never truncates, so a request that is
+    # over the ceiling is a hard failure, not a soft one. Trimming cannot fix it: tool output is
+    # the only thing trimmed, and a transcript that grew past the window is not tool output.
+    # Reporting it here is what turns an engine 400 into something visible before the request goes
+    # out, so the caller can summarize or tell the user instead of eating an error mid turn.
+    over = report["tokens_after"] - detected
+    if over > 0:
+        report["over_ceiling"] = over
+        log.warning(
+            "EX request is over the engine ceiling: %d tokens against a %d window (source %s), "
+            "%d over. Trimming cannot fix this; summarization or a fresh chat can.",
+            report["tokens_after"],
+            detected,
+            source,
+            over,
+        )
+    else:
+        report["over_ceiling"] = 0
     return shaped, report
