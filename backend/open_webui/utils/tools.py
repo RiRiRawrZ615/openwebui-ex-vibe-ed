@@ -852,10 +852,9 @@ async def get_builtin_tools(
         #
         # A failed load is reported and falls back to the native pair, so a broken builtin
         # cannot silently leave a user with no web access at all.
-        _web_search_builtin = 'duckduckgo_search_30'
-        if builtin_registry.is_enabled(_web_search_builtin):
+        if builtin_registry.is_enabled(WEB_SEARCH_BUILTIN_SLUG):
             try:
-                builtin_functions.extend(builtin_registry.get_functions(_web_search_builtin))
+                builtin_functions.extend(builtin_registry.get_functions(WEB_SEARCH_BUILTIN_SLUG))
             except Exception as exc:
                 log.error(
                     'web search builtin failed to load, falling back to native search: %s', exc
@@ -873,7 +872,7 @@ async def get_builtin_tools(
         or await has_permission(user.get('id', ''), 'workspace.tools', await Config.get('user.permissions'))
     ):
         for slug, fn in builtin_registry.enabled_functions():
-            if slug != _web_search_builtin:
+            if slug != WEB_SEARCH_BUILTIN_SLUG:
                 builtin_functions.append(fn)
 
     # Add image generation/edit tools if builtin category enabled,
@@ -1252,6 +1251,16 @@ def get_tool_specs(tool_module: object) -> list[dict]:
 
 # Valid HTTP methods per OpenAPI 3.x – used to skip extension keys (x-*)
 # and non-operation path-item fields (summary, description, servers, parameters).
+# Slug of the shipped Web Search builtin. A module-level constant, not a local.
+#
+# It used to be assigned inside the web_search gate below and then read in the bulk
+# registration block, which runs unconditionally. When web search was off, or the model
+# lacked the web_search capability, or the feature flag was false for that chat, the gate
+# never ran and the read in the loop raised UnboundLocalError. That took down tool
+# resolution for the whole request, so the crash looked like a tools bug but the trigger
+# was a settings or capability state that has nothing to do with tools.
+WEB_SEARCH_BUILTIN_SLUG = 'duckduckgo_search_30'
+
 OPENAPI_HTTP_METHODS = {'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'}
 
 
