@@ -193,6 +193,15 @@ def engine_status(settings: dict, data_dir: Path | str = "") -> dict:
         path = engine_log_path(settings, str(data_dir or ""))
         status = engine_read_status(path, settings.get("engineStatusLines"), settings.get("engineStatusMaxAge"))
         status["eta"] = engine_eta(status.get("status"), settings)
+        # The engine's configured window, from the handshake the launcher writes. Kept apart from the
+        # generation budget on purpose: a message list can sit inside the budget while the request is
+        # over the engine's window, and the engine does not truncate.
+        try:
+            from open_webui.utils.ex_context_window import detect_ceiling
+            value, source = detect_ceiling(data_dir)
+            status["ceiling"] = {"value": value, "source": source}
+        except Exception:
+            status["ceiling"] = None
         return status
     except Exception:
         log.exception("EX engine status read failed")

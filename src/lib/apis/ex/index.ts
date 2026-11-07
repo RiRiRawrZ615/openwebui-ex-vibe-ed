@@ -127,6 +127,7 @@ export type EngineStatusResponse = {
 	status?: EngineStatusLine | null;
 	last_done?: EngineStatusLine | null;
 	lines_read?: number;
+	ceiling?: { value: number; source: string } | null;
 	eta?: { remaining_tokens: number; seconds: number; based_on: string } | null;
 	error?: string;
 };

@@ -391,7 +391,10 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
     for tool_id in tool_ids:
         tool = tool_models.get(tool_id)
         if tool:
-            if not tool.is_active:
+            # For a row the registry covers, the registry is the authority, so the release default
+            # applies without rewriting the stored row. Rows outside the registry keep the stock rule.
+            _slug = builtin_registry.slug_for_tool_id(tool.id)
+            if not (tool.is_active or (_slug and builtin_registry.is_enabled(_slug))):
                 continue
             # Check access control for local tools
             if (
@@ -411,7 +414,12 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
             tools_cache = get_tools_cache(request)
             tool_contents_cache = get_tool_contents_cache(request)
             module = tools_cache.get(tool_id)
-            if module is None or tool_contents_cache.get(tool_id) != tool.content:
+            if _slug:
+                # One source for tools the registry covers. The row carries identity and specs, the
+                # registry supplies the code, so an overlay edit and the shipped file cannot both be live
+                # for the same tool name at the same time.
+                module = builtin_registry.load_instance(_slug)
+            elif module is None or tool_contents_cache.get(tool_id) != tool.content:
                 module, _, source_module = await load_tool_module_by_id(tool_id, content=tool.content)
                 set_tool_module_in_cache(request, tool_id, tool.content, module, source_module)
 
@@ -855,6 +863,18 @@ async def get_builtin_tools(
                 builtin_functions.extend([search_web, fetch_url])
         else:
             builtin_functions.extend([search_web, fetch_url])
+
+    # The rest of the fork tool set was only reachable through the tools admin page. The registry
+    # exposed them through routes, so a builtin marked enabled there still never reached the model,
+    # which is why the fork looked unwired. Registered under the same permission the stock create_tool
+    # gate uses. The web search slug is skipped because its names are already added above.
+    if ENABLE_TOOLS and (
+        user.get('role') == 'admin'
+        or await has_permission(user.get('id', ''), 'workspace.tools', await Config.get('user.permissions'))
+    ):
+        for slug, fn in builtin_registry.enabled_functions():
+            if slug != _web_search_builtin:
+                builtin_functions.append(fn)
 
     # Add image generation/edit tools if builtin category enabled,
     # globally enabled, and allowed by model capability.

@@ -9,6 +9,7 @@ from typing import Literal, Optional
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from open_webui.tools import builtin_registry
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, CACHE_DIR, IFRAME_CSP
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import (
@@ -696,6 +697,12 @@ async def _update_tool(request, id, form_data, user, db, version_id=None):
             module=tool_module,
             allow_code_changes=allow_code_changes,
         )
+        # A tool the fork's registry covers has one authority for enabled state. This page is what the
+        # user sees, so the toggle writes through: otherwise the page could show a tool as off while the
+        # request path still ran it.
+        _slug = builtin_registry.slug_for_tool_id(id)
+        if _slug and updated.get('is_active') is not None:
+            builtin_registry.set_enabled(_slug, bool(updated.get('is_active')))
 
         if tools:
             set_tool_module_in_cache(request, tools.id, tools.content, tool_module, source_module)

@@ -94,6 +94,7 @@ from open_webui.utils.context_compaction import apply_summary_checkpoint, compac
 from open_webui.utils.ex_context_window import detect_ceiling, shape_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
+from open_webui.models.tools import Tools as ToolStore
 from open_webui.utils.ex_trim import gate_features
 from open_webui.utils.ex_loop_guard import refused_call_note, would_repeat
 from open_webui.utils.ex_wiring import (
@@ -2881,6 +2882,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if payload_tools is None:
         # Server side tools
         tool_ids = metadata.get('tool_ids', None)
+        # Release default: the fork's tools are on without a per-chat selection. A chat that picked
+        # tools explicitly keeps its pick; an empty selection means the instance's active set, which
+        # is what a default should mean. Gated on the fork setting so a user who wants stock behavior
+        # gets stock behavior.
+        if not tool_ids and ex_settings.get('toolsDefaultActive', True):
+            tool_ids = [entry.id for entry in await ToolStore.get_tools(active_only=True, user_id=user.id) if entry.id]
         # Client side tools
         direct_tool_servers = metadata.get('tool_servers', None)
 

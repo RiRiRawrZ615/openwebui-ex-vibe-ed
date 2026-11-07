@@ -48,7 +48,9 @@ export function engineChips(value: EngineStatusResponse | null, settings: Record
 	if (!value || !status) return chips;
 
 	if (status.speed) {
-		const phase = status.tool ? `${status.phase} ${status.tool}` : status.phase;
+		// The log says "reading the prompt"; the row should say what that phase is doing, which is prefill.
+	const shownPhase = status.phase === 'reading the prompt' ? 'prefill' : status.phase;
+	const phase = status.tool ? `${shownPhase} ${status.tool}` : shownPhase;
 		chips.push({
 			label: 'engine',
 			value: `${status.speed} tok/s`,
@@ -56,6 +58,14 @@ export function engineChips(value: EngineStatusResponse | null, settings: Record
 		});
 	} else if (status.no_speed) {
 		chips.push({ label: 'engine', value: 'no speed', title: 'The log line for this turn carries no speed, so no rate is inferred from it' });
+	}
+
+	if (status.tokens !== undefined && value.ceiling?.value) {
+		chips.push({
+			label: 'ctx',
+			value: `${status.tokens.toLocaleString('en-US')}/${value.ceiling.value.toLocaleString('en-US')}`,
+			title: `Message-list estimate against the engine's configured window (${value.ceiling.source}). Not the generation budget`
+		});
 	}
 
 	if (settings?.engineStatusEta && value?.eta?.seconds) {

@@ -1,229 +1,241 @@
 {
-  "duckduckgo_search_30": {
-    "exposed": [
-      "fetch_url",
-      "research",
-      "search"
-    ],
-    "missing": [],
-    "name": "Web Search",
-    "source": "duckduckgo_search_30.py",
-    "specs": [
-      "fetch_url",
-      "research",
-      "search"
-    ],
-    "tool_id": "custom_duckduckgo_search_30"
-  },
-  "fleet_ops": {
-    "exposed": [
-      "adb",
-      "check",
-      "fleet",
-      "ingest",
-      "password",
-      "probe",
-      "run",
-      "rustdesk",
-      "scan",
-      "session_open",
-      "session_read",
-      "session_send",
-      "sessions",
-      "vault"
-    ],
-    "missing": [],
-    "name": "Fleet Ops",
-    "source": "fleet_ops.py",
-    "specs": [
-      "adb",
-      "check",
-      "fleet",
-      "ingest",
-      "password",
-      "probe",
-      "run",
-      "rustdesk",
-      "scan",
-      "session_open",
-      "session_read",
-      "session_send",
-      "sessions",
-      "vault"
-    ],
-    "tool_id": "fleet_ops"
-  },
-  "fleet_ssh": {
-    "exposed": [
-      "check",
-      "fleet",
-      "pull",
-      "push",
-      "run",
-      "run_sudo",
-      "rustdesk"
-    ],
-    "missing": [],
-    "name": "Fleet SSH + RustDesk",
-    "source": "fleet_ssh.py",
-    "specs": [
-      "check",
-      "fleet",
-      "pull",
-      "push",
-      "run",
-      "run_sudo",
-      "rustdesk"
-    ],
-    "tool_id": "fleet_ssh"
-  },
-  "leanrea_reverse_v2": {
-    "exposed": [
-      "answer",
-      "copy",
-      "decompile",
-      "ensure",
-      "extract",
-      "find",
-      "handoff",
-      "hashlib_sha1",
-      "install",
-      "log",
-      "outgrep",
-      "parse",
-      "plan",
-      "recon",
-      "resume",
-      "route",
-      "rules",
-      "run",
-      "search",
-      "slice",
-      "stop",
-      "toolchain"
-    ],
-    "missing": [],
-    "name": "leanrea Reverse Engineer",
-    "source": "leanrea_reverse_v2.py",
-    "specs": [
-      "answer",
-      "copy",
-      "decompile",
-      "ensure",
-      "extract",
-      "find",
-      "handoff",
-      "install",
-      "log",
-      "outgrep",
-      "parse",
-      "plan",
-      "recon",
-      "resume",
-      "route",
-      "rules",
-      "run",
-      "search",
-      "slice",
-      "stop",
-      "toolchain"
-    ],
-    "tool_id": "custom_leanrea_reverse_v2"
-  },
-  "pcalc": {
-    "exposed": [
-      "calculate",
-      "evaluate_batch",
-      "solve_linear",
-      "solve_quadratic"
-    ],
-    "missing": [],
-    "name": "Calculator",
-    "source": "pcalc.py",
-    "specs": [
-      "calculate",
-      "evaluate_batch",
-      "solve_linear",
-      "solve_quadratic"
-    ],
-    "tool_id": "pcalc"
-  },
-  "social_reddit_x_1": {
-    "exposed": [
-      "fetch_social",
-      "reddit_subreddit",
-      "reddit_thread",
-      "reddit_timeline",
-      "reddit_user",
-      "social_search",
-      "x_profile",
-      "x_tweet"
-    ],
-    "missing": [],
-    "name": "Reddit + X Reader",
-    "source": "social_reddit_x_1.py",
-    "specs": [
-      "fetch_social",
-      "reddit_subreddit",
-      "reddit_thread",
-      "reddit_timeline",
-      "reddit_user",
-      "social_search",
-      "x_profile",
-      "x_tweet"
-    ],
-    "tool_id": "custom_social_reddit_x_1"
-  },
-  "universal_cognitive_memory_vault": {
-    "exposed": [
-      "knowledge_guidance",
-      "list_paths",
-      "read_path",
-      "recall",
-      "remember",
-      "update_memories"
-    ],
-    "missing": [],
-    "name": "Universal Cognitive Memory Vault",
-    "source": "universal_cognitive_memory_vault.py",
-    "specs": [
-      "knowledge_guidance",
-      "list_paths",
-      "read_path",
-      "recall",
-      "remember",
-      "update_memories"
-    ],
-    "tool_id": "universal_cognitive_memory_vault"
-  },
-  "youtube_video_parser": {
-    "exposed": [
-      "get_youtube_video"
-    ],
-    "missing": [],
-    "name": "YouTube Video Parser",
-    "source": "youtube_video_parser.py",
-    "specs": [
-      "get_youtube_video"
-    ],
-    "tool_id": "youtube_video_parser"
-  },
-  "youtube_visual_1": {
-    "exposed": [
-      "read_youtube_video",
-      "youtube_frame_at",
-      "youtube_frame_urls",
-      "youtube_visual_scenes"
-    ],
-    "missing": [],
-    "name": "YouTube Visual Reader",
-    "source": "youtube_visual_1.py",
-    "specs": [
-      "read_youtube_video",
-      "youtube_frame_at",
-      "youtube_frame_urls",
-      "youtube_visual_scenes"
-    ],
-    "tool_id": "custom_youtube_visual_1"
-  }
+ "craft_graph": {
+  "exposed": [
+   "generate"
+  ],
+  "missing": [],
+  "name": "Craft Graph",
+  "source": "craft_graph.py",
+  "specs": [
+   "generate"
+  ],
+  "tool_id": "craft_graph"
+ },
+ "duckduckgo_search_30": {
+  "exposed": [
+   "fetch_url",
+   "research",
+   "search"
+  ],
+  "missing": [],
+  "name": "Web Search",
+  "source": "duckduckgo_search_30.py",
+  "specs": [
+   "fetch_url",
+   "research",
+   "search"
+  ],
+  "tool_id": "custom_duckduckgo_search_30"
+ },
+ "fleet_ops": {
+  "exposed": [
+   "adb",
+   "check",
+   "fleet",
+   "ingest",
+   "password",
+   "probe",
+   "run",
+   "rustdesk",
+   "scan",
+   "session_open",
+   "session_read",
+   "session_send",
+   "sessions",
+   "vault"
+  ],
+  "missing": [],
+  "name": "Fleet Ops",
+  "source": "fleet_ops.py",
+  "specs": [
+   "adb",
+   "check",
+   "fleet",
+   "ingest",
+   "password",
+   "probe",
+   "run",
+   "rustdesk",
+   "scan",
+   "session_open",
+   "session_read",
+   "session_send",
+   "sessions",
+   "vault"
+  ],
+  "tool_id": "fleet_ops"
+ },
+ "fleet_ssh": {
+  "exposed": [
+   "check",
+   "fleet",
+   "pull",
+   "push",
+   "run",
+   "run_sudo",
+   "rustdesk"
+  ],
+  "missing": [],
+  "name": "Fleet SSH + RustDesk",
+  "source": "fleet_ssh.py",
+  "specs": [
+   "check",
+   "fleet",
+   "pull",
+   "push",
+   "run",
+   "run_sudo",
+   "rustdesk"
+  ],
+  "tool_id": "fleet_ssh"
+ },
+ "leanrea_reverse_v2": {
+  "exposed": [
+   "answer",
+   "copy",
+   "decompile",
+   "ensure",
+   "extract",
+   "find",
+   "handoff",
+   "hashlib_sha1",
+   "install",
+   "log",
+   "outgrep",
+   "parse",
+   "plan",
+   "recon",
+   "resume",
+   "route",
+   "rules",
+   "run",
+   "search",
+   "slice",
+   "stop",
+   "toolchain"
+  ],
+  "missing": [],
+  "name": "leanrea Reverse Engineer",
+  "source": "leanrea_reverse_v2.py",
+  "specs": [
+   "answer",
+   "copy",
+   "decompile",
+   "ensure",
+   "extract",
+   "find",
+   "handoff",
+   "install",
+   "log",
+   "outgrep",
+   "parse",
+   "plan",
+   "recon",
+   "resume",
+   "route",
+   "rules",
+   "run",
+   "search",
+   "slice",
+   "stop",
+   "toolchain"
+  ],
+  "tool_id": "custom_leanrea_reverse_v2"
+ },
+ "pcalc": {
+  "exposed": [
+   "calculate",
+   "evaluate_batch",
+   "solve_linear",
+   "solve_quadratic"
+  ],
+  "missing": [],
+  "name": "Calculator",
+  "source": "pcalc.py",
+  "specs": [
+   "calculate",
+   "evaluate_batch",
+   "solve_linear",
+   "solve_quadratic"
+  ],
+  "tool_id": "pcalc"
+ },
+ "social_reddit_x_1": {
+  "exposed": [
+   "fetch_social",
+   "reddit_subreddit",
+   "reddit_thread",
+   "reddit_timeline",
+   "reddit_user",
+   "social_search",
+   "x_profile",
+   "x_tweet"
+  ],
+  "missing": [],
+  "name": "Reddit + X Reader",
+  "source": "social_reddit_x_1.py",
+  "specs": [
+   "fetch_social",
+   "reddit_subreddit",
+   "reddit_thread",
+   "reddit_timeline",
+   "reddit_user",
+   "social_search",
+   "x_profile",
+   "x_tweet"
+  ],
+  "tool_id": "custom_social_reddit_x_1"
+ },
+ "universal_cognitive_memory_vault": {
+  "exposed": [
+   "knowledge_guidance",
+   "list_paths",
+   "read_path",
+   "recall",
+   "remember",
+   "update_memories"
+  ],
+  "missing": [],
+  "name": "Universal Cognitive Memory Vault",
+  "source": "universal_cognitive_memory_vault.py",
+  "specs": [
+   "knowledge_guidance",
+   "list_paths",
+   "read_path",
+   "recall",
+   "remember",
+   "update_memories"
+  ],
+  "tool_id": "universal_cognitive_memory_vault"
+ },
+ "youtube_video_parser": {
+  "exposed": [
+   "get_youtube_video"
+  ],
+  "missing": [],
+  "name": "YouTube Video Parser",
+  "source": "youtube_video_parser.py",
+  "specs": [
+   "get_youtube_video"
+  ],
+  "tool_id": "youtube_video_parser"
+ },
+ "youtube_visual_1": {
+  "exposed": [
+   "read_youtube_video",
+   "youtube_frame_at",
+   "youtube_frame_urls",
+   "youtube_visual_scenes"
+  ],
+  "missing": [],
+  "name": "YouTube Visual Reader",
+  "source": "youtube_visual_1.py",
+  "specs": [
+   "read_youtube_video",
+   "youtube_frame_at",
+   "youtube_frame_urls",
+   "youtube_visual_scenes"
+  ],
+  "tool_id": "custom_youtube_visual_1"
+ }
 }

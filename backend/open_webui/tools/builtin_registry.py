@@ -104,6 +104,18 @@ def save_state(state: dict) -> None:
     os.replace(tmp, path)
 
 
+def slug_for_tool_id(tool_id: str) -> str | None:
+    """Reverse lookup from the stored tool id to the registry slug.
+
+    Needed because the tools admin page works on ids while the registry works on slugs, and the
+    request path has to decide which authority applies to a given row.
+"""
+    for slug, entry in load_manifest().items():
+        if entry.get('tool_id') == tool_id:
+            return slug
+    return None
+
+
 def is_enabled(slug: str, default: bool = True) -> bool:
     """Per-tool switch.
 
@@ -195,6 +207,25 @@ def load_module(slug: str):
     return module
 
 
+def load_instance(slug: str):
+    """The tool object a builtin exposes.
+
+    Every fork export is shaped as `class Tools:` with methods, which is the shape Open WebUI
+    registers. A module-level getattr found nothing for those, so a builtin marked enabled in the
+    registry still produced no callable and never reached the model. That is why the toolset looked
+    unwired even though the manifest, the files, and the enabled state were all correct. Module-level
+    definitions are still honored for anything written that way.
+    """
+    module = load_module(slug)
+    tool_class = getattr(module, 'Tools', None)
+    if tool_class is None:
+        return module
+    instance = tool_class()
+    # Stock tools read `self.valves` and `self.user`, so the instance is the thing that must carry them.
+    instance.__owv_slug__ = slug
+    return instance
+
+
 def get_functions(slug: str) -> list:
     """The callables this tool exposes, restricted to what the manifest declares.
 
@@ -210,15 +241,19 @@ def get_functions(slug: str) -> list:
     if not meta:
         return []
 
-    module = load_module(slug)
+    target = load_instance(slug)
     functions = []
     for name in meta.get('specs', []):
-        fn = getattr(module, name, None)
+        fn = getattr(target, name, None)
         if callable(fn):
             # setattr on a module-level function is safe and visible to every caller, since
             # there is exactly one function object per name per module.
+            # A method resolved through an instance is a bound method, and an attribute cannot be set
+            # on the bound wrapper. Tagging the underlying function is what makes the lookup work from
+            # either side, and the namespacing at the registration site depends on that lookup.
+            tag_target = getattr(fn, '__func__', fn)
             try:
-                fn.__owv_slug__ = slug
+                tag_target.__owv_slug__ = slug
             except (AttributeError, TypeError):
                 log.warning('could not tag %s from %s for namespacing', name, slug)
             functions.append(fn)

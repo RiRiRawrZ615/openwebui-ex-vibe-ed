@@ -11,6 +11,7 @@ export type ExSettings = {
 	loopThreshold: number;
 	liveStats: boolean;
 	showInfoIcon: boolean;
+	toolsDefaultActive: boolean;
 	launcherStatus: boolean;
 	verbatimSummary: boolean;
 	ragMemory: boolean;
@@ -78,7 +79,8 @@ export const EX_DEFAULTS: ExSettings = {
 	loopGuard: true,
 	loopThreshold: 3,
 	liveStats: true,
-	showInfoIcon: true,
+	showInfoIcon: false,
+	toolsDefaultActive: true,
 	launcherStatus: true,
 	verbatimSummary: false,
 	ragMemory: true,

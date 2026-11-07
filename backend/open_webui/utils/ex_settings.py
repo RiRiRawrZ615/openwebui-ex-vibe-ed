@@ -22,7 +22,8 @@ DEFAULTS = {
     "loopGuard": True,           # detection + steering note at iteration boundary
     "loopThreshold": 3,
     "liveStats": True,           # tok/s during generation
-    "showInfoIcon": True,        # enriched i icon at end of message
+    "showInfoIcon": False,       # the i icon repeats the stats row, so it is off by default
+    "toolsDefaultActive": True,       # active tools apply without a per-chat pick
     "launcherStatus": True,      # show launcher-override state in the EX tab
     "verbatimSummary": False,    # plain-text digest instead of model paraphrase
     # Per-chat retrieval memory. Keeps the original text outside the prompt in a local
