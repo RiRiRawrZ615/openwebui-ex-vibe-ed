@@ -63,7 +63,6 @@
 	import Citations from './Citations.svelte';
 	import CodeExecutions from './CodeExecutions.svelte';
 	import ContentRenderer from './ContentRenderer.svelte';
-	import { StreamSmoother, revealedText } from '$lib/utils/exStreamSmoother';
 	import ContextCompactionLabel from './ContextCompactionLabel.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import { estimateMessagesTokens } from '$lib/utils/contextUsage';
@@ -267,35 +266,6 @@
 	let editedOutput: any[] | null = null;
 	let editTextAreaElement: HTMLTextAreaElement;
 
-	// --- Streamed text pacing -----------------------------------------------------------------
-	// Deltas arrive in whatever sizes the engine emits. llama.cpp sends small, evenly spaced
-	// pieces that already look smooth; Strata sends large bursts separated by real pauses, and
-	// rendering each burst the instant it lands makes the text appear in lurches, which reads
-	// as stalling. The smoother animates a reveal position across the real content instead.
-	//
-	// Correctness constraint, and the reason this lives here rather than in the socket handler:
-	// `message.content` is the transcript and is sent back to the model. The smoothed string is
-	// display only. It is computed for the renderer and never written back, so a slow reveal can
-	// never truncate what the next turn sees.
-	let revealedChars = 0;
-	const smoother = new StreamSmoother({
-		onTick: (n) => {
-			revealedChars = n;
-		}
-	});
-
-	// While the turn is live, show only the revealed prefix. Once done, show everything, which
-	// also covers reloads and any content that arrived without a delta event.
-	$: displayContent = revealedText(message?.content ?? '', revealedChars, message?.done !== false);
-
-	// Keep the reveal target in step with arriving content. Reading message.content here is what
-	// makes this respond to every delta regardless of which socket path delivered it.
-	$: if (message?.content !== undefined) {
-		smoother.setTarget((message.content ?? '').length);
-	}
-	$: if (message?.done) {
-		smoother.finish();
-	}
 
 	let messageIndexEdit = false;
 
@@ -758,10 +728,6 @@
 	});
 
 	onDestroy(() => {
-		// The smoother holds a requestAnimationFrame loop; leaving it running after the message
-		// unmounts would keep waking the browser for a component that no longer exists.
-		smoother.destroy();
-
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);
 		}
@@ -963,7 +929,7 @@
 									id={`${chatId}-${message.id}`}
 									{chatId}
 									messageId={message.id}
-									content={displayContent}
+									content={message.content}
 									output={message.output}
 									sources={message.sources}
 									floatingButtons={message?.done &&
