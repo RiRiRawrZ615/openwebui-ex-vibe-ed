@@ -207,3 +207,29 @@ removing it.
   `youtube_video_parser`.
 - Two fleet tools run SSH and read a credential vault. They ship **enabled** per RiRi's decision,
   documented in the README and the in-app Help tab.
+
+## 5c. Rolling context. Wire map, nothing implemented yet. 2026-11-07.
+
+Intent as RiRi stated it: take the current chat as if the download as txt button had been pressed, dump
+the whole context, and feed it back into the next chat so nothing is lost. Verbatim, no model paraphrase,
+and Strata should not be involved in it. One point to confirm before code is written: whether "Strata
+should not be aware" means OWV owns rollover entirely and engine-side compaction stays off, or something
+narrower.
+
+Already present and wired:
+- `ex_wiring.read_previous_context`, called at `middleware.py` line 2279, gated by the `previousContext`
+  setting, delivered through `ex_context_blocks` so it lands at the tail rather than the message head.
+  `previousContextChars` and `previousContextAsSystem` are honored. The reader itself does not need
+  changes; it already prefers a pasted block, then the stored file.
+
+Missing, and this is the whole job:
+- No writer. The reader only sees `DATA_DIR/ex_previous_context/<chat_id>.txt`, and that directory does
+  not exist in the live data dir, so the reader never finds anything. `routers/ex.py` has `GET /context`
+  only, no POST, so there is no route to store a paste either. Add a writer that renders the stored chat
+  as text in the same shape as the txt export, stores it per chat, and lets the reader pick it up when a
+  new chat starts.
+- `ex_export.verbatim_digest` has a wrapper (`ex_wiring.digest`) but no caller, so `verbatimSummary`
+  changes nothing at runtime. The wrapper docstring is explicit that the result must be stored on the
+  checkpoint message, otherwise the prompt never shrinks and the digest is a no-op in practice.
+- Settings visibility: `loopThreshold` has no control in the tab, so loop guard toggles but the threshold
+  cannot be set. Every other key in `DEFAULTS` has a control. Add a threshold field next to the toggle.
