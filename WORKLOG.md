@@ -610,7 +610,7 @@ Two things added after that entry, both committed:
 - **`BuiltinsSection.svelte`** said nine shipped tools while the manifest carries ten, and the
   instance default had no control of its own. The count now matches the manifest, and a switch
   exposes whether a chat that picked no tools falls back to the active set. That is separate from
-  each tool's own switch. Commit `35e19b2c` `35e191b2c`.
+  each tool's own switch. Commit `35e191b2c`.
 - **Checksum gap in the release script.** `SHA256SUMS-1.0.0-rc1.txt` had only the tarball and the
   AppImage, because the rpm name uses `1.0.0_rc1` and the glob matched the version string with a
   hyphen. The sums file looked complete while omitting the package most people install. Both
