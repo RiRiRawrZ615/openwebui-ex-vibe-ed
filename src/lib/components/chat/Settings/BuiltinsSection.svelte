@@ -1,5 +1,5 @@
 <!--
-  Builtin tools: the nine shipped tools, their switches, and their user-edit overlays.
+  Builtin tools: the ten shipped tools, their switches, and their user-edit overlays.
 
   Design notes
   ------------
@@ -23,10 +23,13 @@
 	import { createEventDispatcher } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
+	import { settings } from '$lib/stores';
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import UserSettingSection from './UserSettingSection.svelte';
 	import UserSettingRow from './UserSettingRow.svelte';
+	import { resolveExSettings } from '$lib/utils/exSettings';
+	import { setExSettings } from '$lib/apis/ex';
 	import {
 		getExBuiltins,
 		getExBuiltin,
@@ -72,6 +75,20 @@
 	$effect(() => {
 		load();
 	});
+
+	// The switch here is the instance default for a chat that has not picked tools. It is separate
+	// from each tool's own switch: the per-tool switch decides whether a tool is active, this decides
+	// whether a chat with no selection uses the active set at all.
+	let defaultActive = $derived(resolveExSettings($settings).toolsDefaultActive);
+
+	const saveDefault = async (value: boolean) => {
+		const res = await setExSettings(localStorage.token, { toolsDefaultActive: value });
+		if (res && 'error' in res) {
+			toast.error(`${res.error}`);
+			return;
+		}
+		settings.update((s) => ({ ...s, ui: { ...(s.ui ?? {}), ex: { ...resolveExSettings($settings), toolsDefaultActive: value } } }));
+	};
 
 	const toggle = async (slug: string, enabled: boolean) => {
 		savingSlug = slug;
@@ -162,6 +179,14 @@
 	<p class="mb-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
 		These tools ship with the app and need no installation. Each can be switched off, and each
 		accepts an edit that overrides it without being lost on update.
+
+	<UserSettingRow
+		let:labelId
+		label="Apply active tools without a per-chat pick"
+		description="A chat that has picked specific tools keeps its pick. This covers chats that have picked none, which is what a shipped default should mean."
+	>
+		<Switch state={defaultActive} ariaLabelledbyId={labelId} on:change={(e) => saveDefault(e.detail)} />
+	</UserSettingRow>
 	</p>
 
 	{#if broken.length > 0}
