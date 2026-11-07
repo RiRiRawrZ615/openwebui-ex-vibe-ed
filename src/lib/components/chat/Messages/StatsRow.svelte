@@ -23,11 +23,14 @@ leading tilde. Once the provider sends its usage block they are replaced with re
 	// the ones above. A windowed arrival rate and the engine's decode speed are not the same thing, and
 	// folding them into one number would hide which one is which.
 	export let engineChips: { label: string; value: string; title: string }[] = [];
+	// Which token figure to show. Passed in rather than read here so the caller decides once for both
+	// halves of the row.
+	export let tokenSource: 'engine' | 'live' | 'both' = 'both';
 
 	// The window figure is only meaningful during a turn, when the caller is tracking the
 	// message-list estimate. Showing it on a finished message would imply the window is still
 	// moving.
-	$: chips = [...statChips(stats, approximate), ...engineChips];
+	$: chips = [...statChips(stats, approximate, tokenSource), ...engineChips];
 </script>
 
 {#if chips.length}

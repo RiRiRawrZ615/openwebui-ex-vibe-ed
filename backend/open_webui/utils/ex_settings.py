@@ -23,6 +23,10 @@ DEFAULTS = {
     "loopThreshold": 3,
     "liveStats": True,           # tok/s during generation
     "showInfoIcon": False,       # the i icon repeats the stats row, so it is off by default
+    # Two token counters exist: the engine's own count read from the log, and the front-end's live
+    # arrival count. They are different measurements, so the row shows one. "both" is available when
+    # someone wants the two figures side by side and can tell them apart.
+    "statsTokenSource": "engine",
     "toolsDefaultActive": True,       # active tools apply without a per-chat pick
     "launcherStatus": True,      # show launcher-override state in the EX tab
     "verbatimSummary": False,    # plain-text digest instead of model paraphrase

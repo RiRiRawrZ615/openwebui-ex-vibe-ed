@@ -19,7 +19,7 @@ import os
 
 from open_webui.env import DATA_DIR
 from open_webui.utils.auth import get_current_user
-from open_webui.models.users import User
+from open_webui.models.users import User, Users
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.ex_backend import BACKENDS, INSTALLABLE, auto_select, install_plan, path_allowed
 from open_webui.utils.ex_discover import DISCOVERABLE, manual_select, probe_all, probe_executable
@@ -141,6 +141,26 @@ async def ex_turn_one(chat_id: str, message_id: str, user=Depends(get_current_us
     if turn is None:
         raise HTTPException(status_code=404, detail="no buffer for this turn")
     return turn
+
+@router.post("/settings")
+async def ex_settings_write(patch: dict, user=Depends(get_current_user)):
+    """Patch the ex namespace for the requesting user.
+
+    This is the only write this router makes to the database, and it is scoped to the ex block so a
+    quick control in the composer does not have to reach through the settings modal. Keys are checked
+    against DEFAULTS, so an unknown key is refused rather than stored and then ignored.
+    """
+    current = resolve_ex_settings(user)
+    unknown = [key for key in patch if key not in current]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown setting key: {', '.join(unknown)}")
+
+    merged = {**current, **patch}
+    updated = await Users.update_user_settings_by_id(user.id, {"ui": {"ex": merged}})
+    if updated is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return {"settings": merged, "user_id": user.id}
+
 
 def _allowed_roots() -> list[Path]:
     """Roots the model check may read.

@@ -2,6 +2,8 @@
 // Python resolver exactly; if one changes, change the other. The Python side is the
 // tested one (Code/vibe-ed/test_ex_settings.py).
 
+export type TokenSource = 'engine' | 'live' | 'both';
+
 export type ExSettings = {
 	enabled: boolean;
 	journalWindow: number;
@@ -12,6 +14,7 @@ export type ExSettings = {
 	liveStats: boolean;
 	showInfoIcon: boolean;
 	toolsDefaultActive: boolean;
+	statsTokenSource: TokenSource;
 	launcherStatus: boolean;
 	verbatimSummary: boolean;
 	ragMemory: boolean;
@@ -81,6 +84,7 @@ export const EX_DEFAULTS: ExSettings = {
 	liveStats: true,
 	showInfoIcon: false,
 	toolsDefaultActive: true,
+	statsTokenSource: 'engine',
 	launcherStatus: true,
 	verbatimSummary: false,
 	ragMemory: true,

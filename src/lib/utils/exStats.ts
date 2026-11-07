@@ -22,6 +22,7 @@
 // merged into message.usage.
 
 import { estimateTokens } from '$lib/utils/contextUsage';
+import { type TokenSource } from '$lib/utils/exSettings';
 
 const MICROSECONDS = 1_000_000;
 const MILLISECONDS = 1_000;
@@ -233,21 +234,28 @@ function oneDecimal(n: number): string {
 	return rounded.toFixed(1);
 }
 
-export function statChips(stats: Stats, approximate: boolean): StatChip[] {
+export function statChips(
+	stats: Stats,
+	approximate: boolean,
+	tokenSource: TokenSource = 'both'
+): StatChip[] {
 	const chips: StatChip[] = [];
 
-	if (approximate) {
+		// One token figure, from one source. The engine count lives in engineStatus.ts, so this is the
+	// front-end side of the choice; gating only here would leave both counters on the row.
+	if (tokenSource === 'both' || tokenSource === 'live') {
+		if (approximate) {
 		if (stats['tokens'] !== undefined)
 			chips.push({
 				label: 'tok',
 				value: `~${groupDigits(stats['tokens'])}`,
-				title: 'Estimated tokens generated so far'
+				title: 'Estimated tokens generated so far (front-end arrival count, not the engine)'
 			});
 	} else if (stats['output_tokens'] !== undefined) {
 		chips.push({
 			label: 'out',
 			value: groupDigits(stats['output_tokens']),
-			title: 'Tokens generated'
+			title: 'Tokens generated (provider usage block)'
 		});
 	}
 

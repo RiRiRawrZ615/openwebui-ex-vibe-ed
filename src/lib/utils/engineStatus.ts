@@ -60,11 +60,15 @@ export function engineChips(value: EngineStatusResponse | null, settings: Record
 		chips.push({ label: 'engine', value: 'no speed', title: 'The log line for this turn carries no speed, so no rate is inferred from it' });
 	}
 
-	if (status.tokens !== undefined && value.ceiling?.value) {
+	// The engine's own token count, against the engine's configured window. This is one of the two
+	// counters on the row, so it shows only when the row is set to engine or both. The other one is the
+	// front-end arrival count in exStats.ts, and the two are not the same measurement.
+	const source = settings?.statsTokenSource ?? 'both';
+	if ((source === 'engine' || source === 'both') && status.tokens !== undefined && value.ceiling?.value) {
 		chips.push({
 			label: 'ctx',
 			value: `${status.tokens.toLocaleString('en-US')}/${value.ceiling.value.toLocaleString('en-US')}`,
-			title: `Message-list estimate against the engine's configured window (${value.ceiling.source}). Not the generation budget`
+			title: `Engine's own token count against its configured window (${value.ceiling.source}). Not the generation budget, and not the front-end estimate`
 		});
 	}
 

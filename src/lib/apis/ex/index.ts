@@ -138,6 +138,15 @@ export type EngineStatusResponse = {
 export const getExEngineStatus = async (token: string): Promise<EngineStatusResponse | { error: string }> =>
 	jsonRequest('/ex/engine', token);
 
+// The settings modal owns the normal save path. The composer does not, so the fork route patches the
+// ex block directly and the response echoes the merged settings so the caller can update its store
+// without a second read.
+export const setExSettings = async (
+	token: string,
+	patch: Record<string, any>
+): Promise<{ settings: Record<string, any>; user_id: string } | { error: string }> =>
+	jsonRequest('/ex/settings', token, 'POST', patch);
+
 export const getExBackendCheck = async (
 	token: string,
 	modelPath: string

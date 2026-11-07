@@ -2,7 +2,7 @@
 	import { getContext, onMount, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 
-	import { config, user, tools as _tools, mobile, knowledge, visibleControls } from '$lib/stores';
+	import { config, settings, user, tools as _tools, mobile, knowledge, visibleControls } from '$lib/stores';
 	import { getKnowledgeBases } from '$lib/apis/knowledge';
 
 	import { createPicker } from '$lib/utils/google-drive-picker';
@@ -23,6 +23,8 @@
 	import PageEdit from '$lib/components/icons/PageEdit.svelte';
 	import Chats from './InputMenu/Chats.svelte';
 	import Files from './InputMenu/Files.svelte';
+	import { resolveExSettings } from '$lib/utils/exSettings';
+	import TokenSource from './InputMenu/TokenSource.svelte';
 	import Notes from './InputMenu/Notes.svelte';
 	import Knowledge from './InputMenu/Knowledge.svelte';
 	import AttachWebpageModal from './AttachWebpageModal.svelte';
@@ -145,6 +147,9 @@
 					class="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin"
 					in:fly={{ x: -20, duration: 150 }}
 				>
+					{#if resolveExSettings($settings).liveStats}
+						<TokenSource />
+					{/if}
 					{#if toolPermissionsEnabled}
 						<button
 							role="menuitem"

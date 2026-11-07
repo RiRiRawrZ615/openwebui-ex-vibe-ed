@@ -418,6 +418,25 @@
 
 			<UserSettingRow
 				let:labelId
+				label={$i18n.t('settings.personal.vibes.tokenSource.label')}
+				description={$i18n.t('settings.personal.vibes.tokenSource.description')}
+			>
+				<div class="flex gap-1">
+					{#each ['engine', 'live', 'both'] as option}
+						<button
+							class="rounded-lg px-2 py-1 text-xs cursor-pointer {ex.statsTokenSource === option
+								? 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+								: 'text-gray-600 dark:text-gray-400 hover:bg-gray-50/40 dark:hover:bg-gray-800/40'}"
+							on:click={() => saveEx({ statsTokenSource: option })}
+						>
+							{option}
+						</button>
+					{/each}
+				</div>
+			</UserSettingRow>
+
+			<UserSettingRow
+				let:labelId
 				label={$i18n.t('settings.personal.vibes.verbatimSummary.label')}
 				description={$i18n.t('settings.personal.vibes.verbatimSummary.description')}
 			>

@@ -1033,9 +1033,9 @@
 							<!-- Stats belong under the answer, not above it. Above, the row pushed the text
 							     down a line and read as a header for the reply instead of a note about it. -->
 							{#if exLive && hasResponseContent}
-								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} engineChips={exEngineChips} />
+								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} />
 							{:else if exStats && message.done && !message.error}
-								<StatsRow stats={exStats} approximate={false} engineChips={exEngineChips} />
+								<StatsRow stats={exStats} approximate={false} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} />
 							{/if}
 						</div>
 					</div>
