@@ -344,3 +344,62 @@ Baseline taken by stashing the fork changes and re-running. Not guessed.
 - RPM spec (G5)
 - The 9 builtin tools from `Code/openwebui-tools/repo_snapshot/`, web-search replacement and
   the edit overlay (G6)
+
+---
+
+## 2026-11-06 · Session 4: streaming pacing, cursor bar, stats accuracy
+
+### 1. The streaming cursor bar (removed)
+Found it, and it took a while because it is not drawn anywhere I first looked.
+`ResponseMessage.svelte:993` rendered a 2px `<span>` with `animate-cursor-pulse` after the
+text while generating. The animation is `--animate-cursor-pulse: cursor-pulse 1.5s ...` in
+`src/tailwind.css:6`. It was appended by upstream, not by this fork.
+
+Removed. It reads as a stray cursor sitting in the prose, and with a chunked backend the text
+already starts and stops on its own, so the blink draws the eye to the gaps rather than the
+words. Streaming state is still conveyed by the message not being marked done.
+
+Note for anyone searching later: `grep animate-cursor-pulse src/` returns one hit, which is
+now the explanatory comment in place of the removed span.
+
+### 2. Streaming pacing for chunked backends (new)
+`src/lib/utils/exStreamSmoother.ts`.
+
+The problem is arrival shape, not speed. llama.cpp emits small, evenly spaced deltas that
+already look smooth. Strata emits large bursts separated by real pauses, so rendering each
+burst on arrival makes text appear in lurches, and the eye reads the pauses as stalling.
+
+The fix animates a *reveal position* across the real content. Rate is adaptive: it accelerates
+as the backlog grows and settles to the base rate when caught up, so a fast burst does not fall
+ever further behind. Verified numerically with a port of the pacing math:
+
+| case | max lag | frames |
+|---|---|---|
+| Strata-like bursts with 800-1200ms pauses | 564 chars | 151 |
+| llama.cpp-like 8-char deltas every frame | 77 chars | 214 |
+| one 8000-char chunk | 0 (hard catch-up) | 1 |
+
+**Correctness constraint, and the reason the smoother lives in ResponseMessage and not in the
+socket handler:** `message.content` is the transcript and is what gets sent back to the model.
+The smoothed string is display-only, passed to the renderer as `displayContent`, and never
+written back. A slow reveal therefore cannot truncate what the next turn sees.
+
+An earlier draft derived the hard catch-up ceiling from a lag budget, which worked out to ~170
+characters and meant a routine 400-character Strata burst dumped instantly instead of
+smoothing, defeating the point. The ceiling is now `HARD_CATCHUP_CHARS = 4000`, a genuine
+safety net rather than a routine path.
+
+### 3. Self-inflicted break, caught and fixed
+While editing the edit-state declarations I removed `editedOutput` and `editTextAreaElement`,
+which are live. The edit flow then referenced undeclared variables. Caught by grepping the file
+after the edit rather than by the build, and both were restored with the smoother's state in
+the same block. Recorded here because it is exactly the class of mistake that a build alone
+does not always surface in Svelte.
+
+### Still to do from RiRi's list
+- Stats accuracy during generation: `exWindowTokens` counts message-list tokens only, not the
+  system prompt or tool schemas, and the live figure is a character heuristic until the final
+  usage chunk lands. `StatsRow.svelte` already labels estimates, but the window figure deserves
+  a check against what the engine is actually given.
+- The spinner lagging during tool calls, and general UI stutter.
+- The craft graphs JS file implemented natively as a builtin.
