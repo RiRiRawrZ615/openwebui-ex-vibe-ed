@@ -275,3 +275,72 @@ hard.
 - Connections tab lists nothing until a prompt is sent
 - Chat title draws over the top of the window instead of truncating
 - Loop guard retuning
+
+---
+
+## 2026-11-06 · Session 3: packaging plan, discovery, gradient drift
+
+RiRi specified the release direction: the RPM **replaces** stock Open WebUI, the launcher
+ships inside the package, and the setup workflow plus the dependencies tab are the same
+surface gated by `ex.allowInstall`. Full design of record is now in `PACKAGING-PLAN.md`.
+
+### Discovery: the setup surface is not missing
+`Settings/OpenWebVibes.svelte` already has an **Install** section (allowInstall switch,
+components input, plan button) plus Backend, Import, Theme, Agentic, Runtime, Behavior and
+Context window sections. `utils/ex_backend.py` already has `install_plan()`, which returns
+*descriptions* and never commands, deliberately. So the work is execution and discovery, not
+a new tab.
+
+### Built this session
+1. **`bonsai` added to `INSTALLABLE`.** It was named as a required engine but was being
+   silently dropped into `refused`, so the setup tab could never have offered it.
+2. **`utils/ex_discover.py`** — new, pure. Probes llama.cpp / strata / bonsai: PATH first,
+   then known candidate directories. Candidate order mirrors RiRi's own launchers
+   (`llama.cpp-rdna2-fa/build/bin`, `llama.cpp-nvidia/build/bin`, `llama.cpp/build/bin`,
+   then `~/strata/bin`, `~/strata/target/release`, `~/.local/bin`). It never executes a
+   candidate, only stats it, so a settings tab cannot become a remote-code surface.
+   `manual_select()` validates a user-supplied path: exists, is a file, is executable, and
+   the component must be discoverable, so the field cannot point at an arbitrary binary.
+   Verified on this machine: found `/home/amd/llama.cpp-rdna2-fa/build/bin/llama-server` and
+   `/home/amd/strata/bin/strata`, bonsai legitimately missing.
+3. **Endpoints** `GET /ex/discover`, `GET /ex/discover/{component}`,
+   `POST /ex/discover/{component}/manual`, plus the matching `src/lib/apis/ex/index.ts`
+   functions and types.
+4. **owv.sh self-wraps in tmux**, with a TTY guard. The first version broke the launcher test
+   harness (a non-interactive run re-execs into tmux and dies with "terminal does not support
+   clear"), which is exactly the kind of break a test should catch. Guard is now
+   `[[ -t 1 && -z $TMUX && OWV_NO_TMUX != 1 ]]`.
+5. **Gradient drift repaired.** Four places describe the gradient and they disagreed:
+   `ex_theme.DEFAULT_GRADIENT`, `ex_settings.DEFAULTS['themeGradient']`, `src/ex_theme.css`,
+   and the TS mirror. Python still held the old bright 2-stop `('#24406b','#3a6ba5')` while
+   the stylesheet and mirror had moved to the dimmed 3-stop. Because the engine applies the
+   gradient at runtime from Python, the Python value is the one the user sees, which is why
+   dimming the CSS appeared to do nothing. Now canonical: `#0a1421, #101d2e, #17293d`.
+
+### Test state, measured against a real baseline
+Baseline taken by stashing the fork changes and re-running. Not guessed.
+
+| suite | baseline | now | delta |
+|---|---|---|---|
+| test_ex_stats.py | 20 p / 1 f | 21 p / **0 f** | fixed |
+| test_ex_settings.py | 41 p / 2 f | 42 p / 1 f | improved |
+| test_ex_theme.py | 69 p / 2 f | 69 p / 2 f | pre-existing |
+| test_ex_theme_mirror.py | 50 p / 3 f | 50 p / 3 f | pre-existing |
+| test_owv_launcher.py | 35 p / 13 f | 35 p / 13 f | pre-existing |
+| test_usage_merge.py | 14 p / 0 f | 14 p / 0 f | holds |
+
+### Known remaining failures, and why they are left
+- `test_ex_theme.py` asserts the **old** gradient contract: `len(DEFAULT_GRADIENT) == 2` and
+  `DEFAULT_GRADIENT[0] == DEFAULT_THEME_SEED`. The canonical default is now 3 stops starting
+  darker than the seed, which is the dimming RiRi asked for. The test encodes superseded
+  intent. Rewriting an assertion to match new behaviour needs to be a deliberate, stated
+  change, not a silent one, so it is called out here rather than quietly edited.
+- `test_ex_theme_mirror.py` (3) compares emitted CSS against a TS mirror; same root cause.
+- `test_owv_launcher.py` (13) fail on harness path resolution
+  (`..._t21fz37e/data/ex_runtime.json`), unrelated to this work.
+
+### Not started
+- Bonsai install step execution and the step-runner with a streamed log (G2)
+- RPM spec (G5)
+- The 9 builtin tools from `Code/openwebui-tools/repo_snapshot/`, web-search replacement and
+  the edit overlay (G6)

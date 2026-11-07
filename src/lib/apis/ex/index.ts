@@ -70,6 +70,41 @@ export type ExInstallPlan = {
 	refused: string[];
 };
 
+/** One component's discovery result, as returned by the backend probe. */
+export type ExDiscoverReport = {
+	component: string;
+	found: boolean;
+	path: string;
+	/** 'path' when it came from PATH, 'candidate' from a known location, 'missing'. */
+	source: 'path' | 'candidate' | 'manual' | 'missing' | string;
+	executable: string;
+	candidates_tried: string[];
+	/** One-line plain language summary, built server side so both sides agree. */
+	hint: string;
+};
+
+/**
+ * The full probe.
+ *
+ * `missing` is the setup workflow's trigger: a fresh machine is the case where it is not
+ * empty, and there is nothing else to detect.
+ */
+export type ExDiscover = {
+	components: Record<string, ExDiscoverReport>;
+	missing: string[];
+	ready: boolean;
+};
+
+/** Result of validating a manually entered path. */
+export type ExManualSelection = {
+	component: string;
+	accepted: boolean;
+	path: string;
+	source?: string;
+	executable?: string;
+	reason: string;
+};
+
 export const getExStatus = async (token: string): Promise<ExStatusResponse | { error: string }> =>
 	jsonRequest('/ex/status', token);
 
@@ -84,6 +119,47 @@ export const getExInstallPlan = async (
 	components: string[]
 ): Promise<ExInstallPlan | { error: string }> =>
 	jsonRequest(`/ex/install-plan?${new URLSearchParams({ components: components.join(',') }).toString()}`, token);
+
+/**
+ * What this machine already has.
+ *
+ * Backs the setup workflow: a fresh machine is simply the case where `missing` is
+ * non-empty. The backend only stats files, so this is cheap enough to call on mount.
+ */
+export const getExDiscover = async (
+	token: string,
+	components: string[] = []
+): Promise<ExDiscover | { error: string }> => {
+	const params = new URLSearchParams();
+	if (components.length > 0) params.set('components', components.join(','));
+	const query = params.toString();
+	return jsonRequest(`/ex/discover${query ? `?${query}` : ''}`, token);
+};
+
+/** Probe a single component. */
+export const getExDiscoverOne = async (
+	token: string,
+	component: string
+): Promise<ExDiscoverReport | { error: string }> =>
+	jsonRequest(`/ex/discover/${encodeURIComponent(component)}`, token);
+
+/**
+ * Validate a manually entered binary path.
+ *
+ * Discovery cannot cover every layout, so the setup workflow offers an override. The
+ * check is deliberately narrow: exists, is a file, is executable. Nothing is run, and the
+ * backend refuses any component that is not discoverable.
+ */
+export const postExDiscoverManual = async (
+	token: string,
+	component: string,
+	path: string
+): Promise<ExManualSelection | { error: string }> =>
+	jsonRequest(
+		`/ex/discover/${encodeURIComponent(component)}/manual?${new URLSearchParams({ path }).toString()}`,
+		token,
+		'POST'
+	);
 
 export const readExJournal = async (
 	token: string,

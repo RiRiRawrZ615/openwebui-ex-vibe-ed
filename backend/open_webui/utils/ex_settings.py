@@ -75,7 +75,13 @@ DEFAULTS = {
     "themeAccent": "#24406b",
     "themeSurface": "#12203a",
     "themeText": "#e6ecf5",
-    "themeGradient": ["#24406b", "#3a6ba5"],
+    # Canonical to the CSS and the TS mirror. These three files are compared by
+    # test_ex_settings and test_ex_theme_mirror, and they had drifted: Python still held
+    # the old bright two-stop ('#24406b', '#3a6ba5') while the stylesheet and the mirror
+    # had already moved to the dimmed three-stop below. Since this engine applies the
+    # gradient at runtime, the Python value is the one the user actually sees, so it is
+    # the one that had to move.
+    "themeGradient": ["#0a1421", "#101d2e", "#17293d"],
     "themeAdjust": 0,
     "themeWallpaper": "",
     "themeIcon": "",

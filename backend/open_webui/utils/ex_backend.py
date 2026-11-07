@@ -33,7 +33,11 @@ BACKENDS = ("llamacpp", "strata")
 GGUF_SUFFIXES = (".gguf",)
 # Components the launcher is allowed to install. Kept explicit so an unknown
 # component is refused instead of passed to a shell.
-INSTALLABLE = ("webui", "llamacpp", "strata", "openwebvibes")
+#
+# 'bonsai' was missing. RiRi named it as the third engine the setup workflow must be able
+# to install (llama.cpp, Strata, bonsai), so a request to install it was silently dropped
+# into `refused` and the setup tab could never offer it.
+INSTALLABLE = ("webui", "llamacpp", "strata", "bonsai", "openwebvibes")
 
 # Path guard. The router exposes the model check, and a settings tab that will read any
 # path on the machine is not acceptable in a multi-user deployment. Roots are passed in
@@ -223,6 +227,8 @@ def install_plan(components: list[str], *, dry_run: bool = True) -> dict:
             steps.append({"component": component, "action": "fetch or build llama.cpp, then serve the GGUF", "note": "backend server"})
         elif component == "strata":
             steps.append({"component": component, "action": "fetch or build Strata, then serve the prepared pack", "note": "backend server"})
+        elif component == "bonsai":
+            steps.append({"component": component, "action": "fetch or build bonsai, then serve the model", "note": "backend server"})
 
     return {
         "dry_run": dry_run,

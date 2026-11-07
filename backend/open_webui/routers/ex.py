@@ -18,6 +18,7 @@ from open_webui.utils.auth import get_current_user
 from open_webui.models.users import User
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.ex_backend import BACKENDS, INSTALLABLE, auto_select, install_plan, path_allowed
+from open_webui.utils.ex_discover import DISCOVERABLE, manual_select, probe_all, probe_executable
 from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
@@ -129,6 +130,53 @@ async def ex_install_plan(
     settings = resolve_ex_settings(user)
     picked = [c for c in components.split(",") if c.strip()]
     return install_plan(picked, dry_run=not settings.get("allowInstall", False))
+
+
+@router.get("/discover")
+async def ex_discover(
+    components: str = Query(default=""),
+    user=Depends(get_current_user),
+):
+    """What this machine already has, so the setup tab can say something true.
+
+    Returns a per-component report: found or not, where, and whether it came from PATH
+    or a known location. Probing only stats files; it never executes a candidate, so this
+    cannot be used to run anything.
+    """
+    picked = tuple(c for c in components.split(",") if c.strip()) or DISCOVERABLE
+    unknown = [c for c in picked if c not in DISCOVERABLE]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown component(s): {', '.join(unknown)}")
+    return probe_all(components=picked)
+
+
+@router.get("/discover/{component}")
+async def ex_discover_one(
+    component: str,
+    user=Depends(get_current_user),
+):
+    """Probe one component. 404 rather than an empty report, so a typo is visible."""
+    if component not in DISCOVERABLE:
+        raise HTTPException(status_code=404, detail=f"unknown component: {component}")
+    return probe_executable(component)
+
+
+@router.post("/discover/{component}/manual")
+async def ex_discover_manual(
+    component: str,
+    path: str = Query(...),
+    user=Depends(get_current_user),
+):
+    """Validate a manually supplied binary path.
+
+    Discovery cannot cover every layout, so a manual override is needed. This only checks
+    the path exists, is a file and is executable; it does not run it, and it refuses any
+    component that is not discoverable, so the field cannot point the setup at an
+    arbitrary binary.
+    """
+    if component not in DISCOVERABLE:
+        raise HTTPException(status_code=404, detail=f"unknown component: {component}")
+    return manual_select(component, path)
 
 
 def _fork_db() -> Path:
