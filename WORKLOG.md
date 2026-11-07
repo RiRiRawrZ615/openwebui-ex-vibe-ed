@@ -604,3 +604,19 @@ scripts present.
 - Backend auto-selection killing the wrong backend: not touched.
 - 13 launcher harness failures are genuine gaps, not stale assertions.
 - Screenshots for the release notes still owed.
+
+Two things added after that entry, both committed:
+
+- **`BuiltinsSection.svelte`** said nine shipped tools while the manifest carries ten, and the
+  instance default had no control of its own. The count now matches the manifest, and a switch
+  exposes whether a chat that picked no tools falls back to the active set. That is separate from
+  each tool's own switch. Commit `35e19b2c` `35e191b2c`.
+- **Checksum gap in the release script.** `SHA256SUMS-1.0.0-rc1.txt` had only the tarball and the
+  AppImage, because the rpm name uses `1.0.0_rc1` and the glob matched the version string with a
+  hyphen. The sums file looked complete while omitting the package most people install. Both
+  spellings are now covered, and the final listing matches the sums.
+
+Final numbers for this session: 960 asserted checks, 19 failed (settings mirror 1, theme 2, theme
+mirror 3, launcher 13). `test_ex_tools.py` is 21 checks including the new UI checks, `test_ex_turns.py`
+34, `test_ex_token_source.py` 21, `check_i18n_usage.py` clean. Build ran in a capped user cgroup and
+finished at 15:44; three new UI strings verified present in `build/_app/immutable`.
