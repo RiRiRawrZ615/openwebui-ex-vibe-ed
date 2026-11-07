@@ -4113,6 +4113,9 @@
 		files = [];
 		messageInput?.setText('');
 
+		// Sending a new message supersedes whatever the previous turn failed with.
+		await dismissStaleError(history.currentId);
+
 		return (
 			(await submitPrompt(userPrompt, _files, bridgeRequest)) ?? {
 				status: 'rejected'
@@ -4704,6 +4707,41 @@
 		exFailureState.delete(messageId);
 	};
 
+	// Stock Open WebUI leaves the last turn's error attached to its message. Nothing removes it
+	// when the user acts on that turn again, so the banner outlives the failure that caused it:
+	// press Continue and the error stays on screen through the whole resumed reply, send a new
+	// message and it stays above the new turn. Continue and Submit both mean "this turn is not
+	// finished", which is exactly what makes the banner stale, so it is dropped here.
+	//
+	// The cleared history is saved before the caller changes any other state. The backend merges
+	// an incoming history over the stored one and prefers the stored message while either copy is
+	// not done, so a save issued after done is set to false would let the old error come back.
+	const dismissStaleError = async (messageId: string | null | undefined) => {
+		if (!messageId) return false;
+
+		const target = history.messages[messageId];
+		if (!target?.error) return false;
+
+		const cleared = { ...target };
+		delete cleared.error;
+		history.messages[messageId] = cleared;
+		history = history;
+
+		// A manual action supersedes any queued auto-continue for this message. Without this the
+		// pending timer fires during the resumed turn and sends the request a second time.
+		clearFailureState(messageId);
+
+		// A turn that failed before a chat row existed has nothing persisted to correct, and the
+		// save helper is only valid against a real chat id.
+		if ($chatId && !$temporaryChatEnabled) {
+			await saveChatHandler($chatId, history).catch((error) => {
+				console.warn(`could not persist cleared error for ${messageId}: ${error}`);
+			});
+		}
+
+		return true;
+	};
+
 	const scheduleAutoContinue = (responseMessage, errorMessage: string) => {
 		if (!$settings) return;
 		const ex = resolveExSettings($settings);
@@ -4886,6 +4924,10 @@
 	const continueResponse = async (message) => {
 		console.log('continueResponse');
 		const _chatId = JSON.parse(JSON.stringify($chatId));
+
+		// Drop the failure banner before the request goes out. The user pressed Continue, so the
+		// turn is being retried and the old error no longer describes anything on screen.
+		await dismissStaleError(message.id);
 
 		if (history.messages[message.id].done == true) {
 			const responseMessage = history.messages[message.id];
