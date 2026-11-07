@@ -45,6 +45,9 @@ from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.tools import Tools
 from open_webui.models.users import UserModel
+# Imported at module level, but the registry itself imports nothing heavy: the builtin sources
+# are loaded lazily on first use, so this does not slow application start.
+from open_webui.tools import builtin_registry
 from open_webui.tools.builtin import (
     add_memory,
     ask_user,
@@ -826,7 +829,32 @@ async def get_builtin_tools(
         and features.get('web_search')
         and await has_user_permission('web_search')
     ):
-        builtin_functions.extend([search_web, fetch_url])
+        # The shipped Web Search builtin replaces the two native stubs.
+        #
+        # Upstream exposed search_web and fetch_url here. This fork ships a full Web Search
+        # tool (search, fetch_url, research) built on a cache-first fetcher, and RiRi's
+        # direction for the release is that it replaces the bundled web search outright rather
+        # than sitting beside it. Two review points on the swap:
+        #
+        #   - The names match, so nothing downstream has to change: the old registration
+        #     exposed `search_web` and `fetch_url`, and the builtin exposes `search`,
+        #     `fetch_url` and `research`. `fetch_url` collides, which is intended and is why
+        #     the native one is not also added here.
+        #   - `research` is genuinely new, which is the point of the swap.
+        #
+        # A failed load is reported and falls back to the native pair, so a broken builtin
+        # cannot silently leave a user with no web access at all.
+        _web_search_builtin = 'duckduckgo_search_30'
+        if builtin_registry.is_enabled(_web_search_builtin):
+            try:
+                builtin_functions.extend(builtin_registry.get_functions(_web_search_builtin))
+            except Exception as exc:
+                log.error(
+                    'web search builtin failed to load, falling back to native search: %s', exc
+                )
+                builtin_functions.extend([search_web, fetch_url])
+        else:
+            builtin_functions.extend([search_web, fetch_url])
 
     # Add image generation/edit tools if builtin category enabled,
     # globally enabled, and allowed by model capability.
@@ -922,12 +950,49 @@ async def get_builtin_tools(
     ):
         builtin_functions.append(notify)
 
+    # Shipped builtin tools.
+    #
+    # These are the nine tools that used to exist only as WebUI tool exports. Each is switched
+    # on or off individually in OpenWebVibes settings, and each may be shadowed by a user edit
+    # stored as an overlay. The registry handles both; this only asks it for the enabled set.
+    #
+    # Guarded by a model capability and a category switch like every other builtin group, so a
+    # model or an admin can turn the whole set off. Default is enabled, which is RiRi's call for
+    # the release: a fresh install should arrive working.
+    if is_builtin_tool_enabled('owv_tools') and get_model_capability('owv_tools'):
+        try:
+            for _slug, _fn in builtin_registry.enabled_functions():
+                # Web search is registered above through its own gate, so adding it here would
+                # produce two specs for the same name.
+                if _slug == 'duckduckgo_search_30':
+                    continue
+                builtin_functions.append(_fn)
+        except Exception as exc:
+            log.error('builtin tool registry unavailable, continuing without them: %s', exc)
+
     if getattr(request.state, 'internal', False) is True:
         from open_webui.utils.subagents import MUTATING_MEMORY_TOOLS
 
         builtin_functions = [func for func in builtin_functions if func.__name__ not in MUTATING_MEMORY_TOOLS]
 
     for func in builtin_functions:
+        # Namespacing, for the shipped builtin tools only.
+        #
+        # tools_dict is keyed by function name, so two tools exposing `run` would collide and
+        # the later one would silently replace the earlier. That is not hypothetical here: the
+        # real exports contain five such overlaps, `check`, `fleet`, `run`, `rustdesk` and
+        # `search`, because the two fleet tools and the web-search and leanrea tools were
+        # written independently.
+        #
+        # So a shipped tool's function is registered as `<slug>__<name>`, which is unique by
+        # construction, and the spec name is rewritten to match. The alternative, letting the
+        # last one win, would silently remove tools from the model with no error anywhere.
+        #
+        # Only tools carrying `__owv_slug__` are renamed, so nothing about the existing
+        # native builtins changes.
+        slug = getattr(func, '__owv_slug__', None)
+        exposed_name = f'{slug}__{func.__name__}' if slug else func.__name__
+
         callable = await get_async_tool_function_and_apply_extra_params(
             func,
             {
@@ -945,6 +1010,8 @@ async def get_builtin_tools(
         )
 
         spec = get_builtin_tool_spec(func)
+        if slug:
+            spec['name'] = exposed_name
         if func.__name__ == 'delegate_task':
             from open_webui.utils.subagents import get_subagent_models
 
@@ -962,11 +1029,12 @@ async def get_builtin_tools(
             else:
                 properties.pop('model_id', None)
 
-        tools_dict[func.__name__] = {
-            'tool_id': f'builtin:{func.__name__}',
+        tools_dict[exposed_name] = {
+            'tool_id': f'builtin:{exposed_name}',
             'callable': callable,
             'spec': spec,
             'type': 'builtin',
+            'owv_slug': slug,
         }
 
     return tools_dict

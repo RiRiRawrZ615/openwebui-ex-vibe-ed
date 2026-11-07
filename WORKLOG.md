@@ -403,3 +403,89 @@ does not always surface in Svelte.
   a check against what the engine is actually given.
 - The spinner lagging during tool calls, and general UI stutter.
 - The craft graphs JS file implemented natively as a builtin.
+
+---
+
+## 2026-11-06 · Session 5: native builtin tools
+
+RiRi's decisions, all now implemented: every tool in `repo_snapshot/` becomes a builtin, our
+web search replaces the bundled one outright, leanrea ships too, the overlay is whole-file, and
+the tools are **enabled by default** with the GitHub README documenting it.
+
+### What shipped
+
+1. **`tools/convert_builtins.py`** — reproducible conversion from a WebUI export to a builtin
+   module. Nine tools, ~220 KB of source, 68 functions.
+2. **`backend/open_webui/tools/builtins/`** — the nine converted modules plus `manifest.json`.
+3. **`backend/open_webui/tools/builtin_registry.py`** — resolution (overlay then shipped),
+   per-tool enable state, overlay save/revert, stale-overlay detection, lazy module loading.
+4. **`utils/tools.py`** — the registry is wired into `get_builtin_tools`, web search is swapped,
+   and registration is namespaced.
+
+### The conversion approach, and why the first one failed
+
+The first attempt rewrote each method into a module-level free function with `self` dropped and
+`self.valves.X` flattened to a constant. It failed on real code, three distinct ways:
+
+- `asyncio.to_thread(self._fetch_sync, url)` passes a **bound method as a value**, so attribute
+  rewriting on calls does not reach it.
+- `fleet_ssh` passes the **whole Valves object** to a helper (`_ssh_base(self.valves, host)`), so
+  flattening valves into module constants is wrong in principle, not just mechanically.
+- `social_reddit_x_1` **mutates `self._token`** and `self._last_request` across calls. A free
+  function has nowhere to keep that, and hoisting to globals would silently change the threading
+  of a rate limiter and a token cache.
+
+The shipped approach keeps each `Tools` class **verbatim** and appends a module-level singleton
+plus one wrapper per public method, forwarding the original signature. A conversion therefore
+cannot change behaviour. Cost: one stack frame per call.
+
+Three further real findings the converter had to handle:
+
+- **Two method shapes.** `pcalc`, the YouTube tools and the social reader are `async def`;
+  `leanrea`, `fleet_ops` and `fleet_ssh` are plain `def`, built on blocking subprocess and SSH.
+  Wrapping a sync tool in an async shell would put blocking SSH work on the event loop, so the
+  wrapper kind matches the original exactly.
+- **`fleet_ssh` has `from __future__ import annotations`**, which must be the first statement
+  after the module docstring. Module ordering is therefore built as an AST (docstring, then
+  future imports, then the rest) rather than by splicing unparsed text. An earlier line-splicing
+  version produced an `IndentationError`.
+- **Leading frontmatter.** `fleet_ssh` starts with a YAML block, not a docstring. Both are just a
+  leading string constant, and both are dropped, because the generated header supplies the
+  docstring and the frontmatter is WebUI tool metadata rather than Python.
+
+### The namespacing bug, caught by measurement
+
+`tools_dict` is keyed by **function name**. The nine exports contain five genuine collisions:
+`check`, `fleet`, `run`, `rustdesk` and `search` each appear in two tools, because the two fleet
+tools and the web-search and leanrea tools were written independently. Left alone, the later
+registration silently replaces the earlier, with no error anywhere.
+
+`enabled_functions()` now tags every function with `__owv_slug__`, and registration uses
+`<slug>__<name>` with the spec name rewritten to match. Only tagged functions are renamed, so no
+existing native builtin is affected. Verified: 68 entries, **zero collisions**.
+
+### The allowlist, which is not cosmetic
+
+A converted module's namespace holds its own imports. `youtube_visual_1` ends up with
+`parse_qs`, `urlopen`, `urlparse`; `pcalc` with pydantic's `Field`; every module with its `Tools`
+and `Valves` classes. Offering those to a model as tools would be useless and confusing, so
+exposure is restricted to exactly the names the manifest declares. Tested explicitly.
+
+### Web search swap
+
+Upstream registered `search_web` and `fetch_url`. The builtin exposes `search`, `fetch_url` and
+`research`, so `fetch_url` collides deliberately (the native one is not also added) and
+`research` is the genuinely new capability. If the builtin fails to load, the code logs and falls
+back to the native pair, so a broken builtin cannot leave a user with no web access at all.
+
+### Verification
+
+`test_builtin_registry.py` in `Code/vibe-ed`: 28 checks, all passing. Covers conversion integrity,
+the allowlist, all five collisions, toggles, overlay precedence and revert, rejection of an
+overlay with a syntax error, and stale-overlay detection after the shipped builtin changes.
+
+### Still outstanding
+- The Builtins UI in the OpenWebVibes tab (toggles, editor, revert). Backend `describe_all()`
+  returns everything the UI needs.
+- The Setup tab.
+- README section documenting that the tools ship enabled, plus the GitHub icon.

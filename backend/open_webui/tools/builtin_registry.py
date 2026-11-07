@@ -200,6 +200,11 @@ def get_functions(slug: str) -> list:
 
     The allowlist is the whole point: the module namespace contains the tool's imports, and
     offering `urlparse` to a model as a tool is wrong.
+
+    Each returned function is tagged with `__owv_slug__`. The caller uses that to namespace the
+    function when registering it, because the shipped tools genuinely collide: `check`, `fleet`,
+    `run`, `rustdesk` and `search` each appear in two of the nine exports. Tagging happens here
+    rather than at the registration site so that the association cannot be lost.
     """
     meta = load_manifest().get(slug)
     if not meta:
@@ -210,6 +215,12 @@ def get_functions(slug: str) -> list:
     for name in meta.get('specs', []):
         fn = getattr(module, name, None)
         if callable(fn):
+            # setattr on a module-level function is safe and visible to every caller, since
+            # there is exactly one function object per name per module.
+            try:
+                fn.__owv_slug__ = slug
+            except (AttributeError, TypeError):
+                log.warning('could not tag %s from %s for namespacing', name, slug)
             functions.append(fn)
         else:
             log.error('builtin %s declares %s but the module does not define it', slug, name)
