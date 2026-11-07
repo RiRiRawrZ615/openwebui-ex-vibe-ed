@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
+
+## [1.0.0-rc1] - 2026-11-07
+
+This fork's own release notes. The upstream `CHANGELOG.md` entries below this section describe
+upstream Open WebUI, which is not the code running here. The About panel and the What's new modal
+read this file through `/api/changelog`, so the fork section appears first.
+
+### Added
+
+- **Fork changelog.** The release notes panel now shows this fork's features instead of upstream's. The update check reports which repository the version number came from.
+- **Updater repointed.** `OWV_UPDATE_REPO` defaults to `RiRiRawrZ615/openwebui-ex-vibe-ed`, so an "update available" describes code that can actually be fetched. The check is cached for ten minutes because the layout calls it on every page load, a stale answer is labelled as stale, and the timeout is 3 seconds instead of 1 so a cold connection still answers.
+- **Engine status row.** Phase, tokens, budget, tokens per second, elapsed seconds, and an ETA computed as `(budget - tokens) / speed` with no model call. Reads the engine log through the route, with a 3 second refresh floor. Cancelled turns that print no speed are handled.
+- **Detected context ceiling.** The engine's real window comes from the handshake the launcher writes at startup, cached for five minutes with the file mtime as part of the check, so an engine restart with a different window invalidates it. Reported alongside the budget: when the ceiling and the window disagree, that is shown rather than smoothed over.
+- **Over-ceiling reporting.** The engine refuses an over-window request outright and never truncates, so a request past the ceiling is reported before it goes out instead of arriving as a mid-turn error.
+- **Reply reserve.** `max_tokens` is split by the configured context window percentage, so a chat does not get summarized and lose its window before generation finishes.
+- **Settings tab**, separate from the stock settings page, with the fork's keys stored per-key in the `ex` namespace. Theme controls plus a mirror in the front-end types.
+- **Theme system.** Gradient stops and accents as live CSS variables, with default values mirrored in TypeScript.
+- **Loop guard.** Repeated tool-call detection at a configurable threshold, which fires before the iteration ceiling. Stock only had a ceiling on iterations, which triggers after the loop already happened.
+- **Tool-call visibility and recovery.** A tool call emitted as message text is detected and reconstructed, and the turn is attributed honestly rather than left as plain text.
+- **Verbatim journal, digest and retrieval.** Compaction hands the next context a paraphrase; this fork keeps a verbatim digest per chat, a journal that is not replayed into model-facing history, and retrieval over both so a lossy summary can be checked against what was actually said.
+- **Rollover store.** One folder per chat under `ex_previous_context` with `chat.txt`, `context.txt`, `summary.txt`, `summary.json`, `manifest.json`. A new chat inherits from the most similar existing chat; a new session does not.
+- **Batch multi-select** over chats: move to a folder, download, delete, validated without touching a database directly.
+- **Cluster direction.** Laptop as master, phone as worker, with the phone not treated as an interface.
+- **Modular UI host.** `ExSlotHost` plus a plugin directory so components can be swapped or updated without rewiring the request path.
+- **Import and export.** The fork runs against the same data dir as stock, and import covers the fork-only stores.
+- **Launchers and operational scripts.** Aliases, a watchdog that runs outside the session it watches and classifies exits before restarting (a stop must stay a stop), restart, status, connections, backup and restore, and a per-chat turn buffer.
+- **Package formats.** An rpm that installs the python dependencies on first run against whatever hardware is present, and a portable AppImage directory with a bootstrap script, labelled as such. The compiled venv is not bundled; measured at 7.3 GB with 4.2 GB of CUDA wheels a ROCm or CPU machine will never load.
+
+### Fixed
+
+- The settings tab crashed on open after the tab split, from two calls left behind pointing at functions that moved.
+- Tokens per second was wrong in both halves: the Python accepted only one shape, and the front-end accepted only one shape.
+- The elapsed pattern only accepted the comma form, so the second form produced nothing.
+- `get_openai_config` now returns the guard result on read. A read-time-only enforcement was erased on the first save, because the UI read the raw stored list, pushed a new entry, and wrote it back.
+- Frontend build memory. The build OOMed with `CALL_AND_PAUSE_ON_THROW`; the heap is now set explicitly in the build script.
+- `stream_stop` no longer emits the `stop` event twice.
+- `normalize_usage` reads `cached_tokens` from llama.cpp as well as the fork's own shape, and the fork no longer claims `usage_source = normalize_usage` for llama.cpp models.
+- `build_params_json` was reading profile settings instead of the parameters.
+- The stale-build warning now checks `svelte.config.js` as well as `src`.
+- `resolve_log_path` uses `Path.home()` rather than a hardcoded machine name.
+
+### Known issues in rc1
+
+- 19 harness failures remain: 1 settings mirror, 2 theme, 3 theme mirror, 13 launcher. The launcher ones are real gaps, not stale assertions. `OWV_INSTALL` is declared and never read, there is no usage block, no `OWV_LLAMA_BIN` or `OWV_STRATA_BIN`, and something executes when `OWV_INSTALL=0`.
+- The engine log parser accepts only `[strata] ` lines. llama.cpp's own `n_ctx`, `print_info`, `print_timing` and `t_prompt_ms` lines do not reach the log at all, so prefill chunk visibility and the SET ctx stat are not yet derivable from it. Bonsai shapes are unknown until a real log is captured.
+- Several settings keys have no UI control yet, including `loopThreshold`, the engine status keys, `rolloverThreshold` and `reasoningOnDemand`.
+- `sendSteering()` is defined and never called, so the steering box has no submit control.
+- The per-chat turn buffer exists as a script only. Nothing in the streaming path writes it or reads it back, so a crash mid-turn still loses the turn.
+- Screenshots for the release notes are not included yet.
 ## [0.13.0] - 2026-11-02
 
 ### Added
