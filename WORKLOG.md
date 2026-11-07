@@ -529,3 +529,78 @@ the search replacement, the overlay behaviour, the stats semantics, and the in-a
 ### Build
 Clean. `Builtin tools`, `This machine`, `Revert to shipped` and a Help answer string all verified
 present in `build/_app/immutable/chunks/DPkvbdca.js`.
+
+## Session 2026-11-07 (late): token counters, packaging, and two packaging mistakes
+
+## Token counters: one shown, not two
+
+The stats row carried two token figures at once and they were not the same measurement. One is the
+engine's own count read from its log; the other is the front-end count of tokens that have arrived.
+Both were labeled `tok`, so the row looked like it was reporting the same thing twice.
+
+Fix: a setting with three values, `engine`, `live`, `both`, defaulting to `engine`, mirrored on both
+sides (`ex_settings.py` DEFAULTS and `exSettings.ts` type plus `EX_DEFAULTS`). Both halves read the
+same value, which is the point: gating only one side would have left two numbers on the row.
+
+- `exStats.statChips` takes the choice as a third argument, so the front-end token chip appears only
+  for `live` or `both`.
+- `engineStatus.engineChips` gates the ctx chip for `engine` or `both`.
+- `StatsRow` takes the choice as a prop and passes it down; `ResponseMessage` resolves it from
+  settings at both call sites.
+- Titles now say which side each figure came from. The ctx chip title was corrected, because the
+  value it shows is the engine count against the engine's window, not the message-list estimate.
+
+Quick access is in the composer menu, gated on `liveStats` being on, and the settings tab carries the
+same control. Saving from the composer goes through `POST /api/ex/settings`, which is the only write
+this router makes to the database and is scoped to the `ex` namespace; unknown keys are refused
+rather than stored and then ignored. The store is patched immediately so the row updates without a
+reload, and a failed save is reported rather than swallowed.
+
+## Packaging
+
+Release 1.0.0-rc1 built with `owv-release.sh --with-data`:
+
+- rpm `openwebvibes-1.0.0_rc1-1.fc44.noarch.rpm` (88M)
+- AppImage `openwebvibes-1.0.0-rc1-x86_64.AppImage` (244M)
+- tarball `openwebvibes-1.0.0-rc1.tar.gz` (244M), `SHA256SUMS-1.0.0-rc1.txt`
+- staging carries `launchers/` (10 scripts plus `owv.aliases`), the bootstrap entry, `README.md` and
+  `FEATURES.md`, and the opt-in snapshot: `data/webui.db`, `data/ex_memory`, `data/tools/` (2 exports),
+  `data/restore-data.sh`. Journals skipped unless `--with-journals` (181 MB here).
+
+Cleanliness bug found while verifying the first run: the package shipped `app/backend/data`, which is
+runtime state from whichever machine last ran the app (a 798 KB webui.db, uploads, cache, a chroma
+dir). Two mistakes were made before it was fixed, and both are worth keeping in the record:
+
+1. A comment was first put inside a backslash continuation. The continuation is joined before the
+   comment token is read, so it would have swallowed the rest of the `rsync` command. Comments go
+   above the call.
+2. `--exclude '/data'` did not exclude it, because the transfer root is `backend` itself, so the path
+   rsync sees is `backend/data`. The working pattern is `--exclude '/backend/data'`, verified by a
+   probe run before the script was re-run. `backend/open_webui/data/readme.txt` is still shipped.
+
+The re-run produced a tarball with no runtime leftovers and the intended snapshot, aliases and
+scripts present.
+
+## Checks
+
+- New test `Code/vibe-ed/test_ex_token_source.py`: 21 checks, all passing. Covers both mirrors, the
+  gate on both halves, titles, the prop chain, the composer control, the settings tab, the route guard,
+  and that the guard compares against the real DEFAULTS dict.
+- Full harness: 957 asserted checks, 19 failed. Same 19 as before (settings mirror 1, theme 2, theme
+  mirror 3, launcher 13). Nothing regressed.
+- i18n cross-check: clean, with the two new labels present in the translation file.
+- Svelte compile check on the five components touched: all compile. The build ran in a capped user
+  cgroup (`MemoryMax=8G`, node heap 8192) and finished at 15:28 with the engine resident at about
+  42 GB, so the build is the thing that dies if it overreaches, not the engine.
+
+## Still open
+
+- Thinking italics and expand-all per chat: the renderer was not identified. `structuredOutput.ts`
+  keeps blocks as output items and `ResponseMessage.svelte` renders `visibleResponseContent` without
+  moving blocks into the reply, so the size difference comes from markdown defaults rather than a fork
+  style. Needs the component that iterates `message.output`.
+- File context add/remove in the composer menu: `InputMenu.svelte` has a files tab gated on
+  `chat.attach_files`; the quick block is not there yet.
+- Backend auto-selection killing the wrong backend: not touched.
+- 13 launcher harness failures are genuine gaps, not stale assertions.
+- Screenshots for the release notes still owed.
