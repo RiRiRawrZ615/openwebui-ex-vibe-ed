@@ -59,6 +59,14 @@ async def compact_messages_for_request(
     if not config['enable']:
         return messages, None, []
 
+    # Rolling context owns the transcript when it is on. A summary produced here would paraphrase the
+    # same chat the writer is keeping verbatim on disk, and that is exactly the conflict the
+    # single-policy rule exists to prevent: the window figure cannot be trusted when two things decide
+    # how big the chat is. Trimming still happens in ex_context_window; what is refused here is the
+    # rewriting.
+    if resolve_ex_settings(user).get('rollover'):
+        return messages, None, []
+
     system_messages = [messages[0]] if messages and messages[0].get('role') == 'system' else []
     messages = messages[1:] if system_messages else messages
 

@@ -233,3 +233,28 @@ Missing, and this is the whole job:
   checkpoint message, otherwise the prompt never shrinks and the digest is a no-op in practice.
 - Settings visibility: `loopThreshold` has no control in the tab, so loop guard toggles but the threshold
   cannot be set. Every other key in `DEFAULTS` has a control. Add a threshold field next to the toggle.
+
+### 5c status after implementing. 2026-11-07.
+
+The writer now exists, in `utils/ex_rollover.py`, and the reader reaches it through the carry.
+Store shape is a folder per chat under `DATA_DIR/ex_previous_context/<chat_id>/`: `chat.txt` in the
+download-button shape, `index.tsv` mapping message id to section id, `manifest.json` recording which
+chat a chat was carried from, and `reasoning/<id>.md` for each block.
+
+Call sites, two only. The writer runs in `models/chats.py` at the message save, gated on a completed
+message: the request path sees the history before generation, so a rollover decided in middleware
+would have lost the reply that was being generated. The trigger runs where the window is measured,
+on `tokens_before` rather than `tokens_after`, so the rollover point does not move when stale tool
+output happens to be trimmed.
+
+RiRi's decision on the trigger: 0.7 of the window. On the inheritance: a new chat resolves its source
+through the carry pointer, consumed once. On reasoning: blocks are addressed by id, the prompt gets
+the index of ids and excerpts, and a block is pulled back only when an id is cited, in the middleware
+block collector so it lands at the tail.
+
+Compaction is refused in the request path when rollover is on. That is the "Strata must not be clever"
+rule written down in code: the window shaping still trims, but nothing rewrites the transcript.
+
+Still open: the settings tab has no control for the new keys, so they run at their defaults until a
+control is added; the test harness's three theme failures and the launcher failures are the ones
+documented earlier, not new ones.

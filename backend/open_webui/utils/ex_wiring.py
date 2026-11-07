@@ -39,10 +39,28 @@ from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats
 from open_webui.utils.ex_rag import ChatMemory, should_retrieve
+from open_webui.utils.ex_rollover import (
+    branch_order,
+    index_block,
+    manifest as rollover_manifest,
+    mark_carry,
+    on_demand,
+    read_chat,
+    read_index,
+    read_reasoning,
+    resolve_source,
+    store_chat,
+    threshold_crossed,
+)
 from open_webui.utils.ex_steering import load_queue, mark_applied, normalize_chat_id, plan as steering_plan
 
 
-def read_previous_context(data_dir: Path | str, chat_id: str, settings: dict) -> dict | None:
+def read_previous_context(
+    data_dir: Path | str,
+    chat_id: str,
+    settings: dict,
+    user_id: str = "",
+) -> dict | None:
     """The previous-context message for this request.
 
     Read order: a pasted block on the request, then the stored file for this chat. The paste is
@@ -54,18 +72,105 @@ def read_previous_context(data_dir: Path | str, chat_id: str, settings: dict) ->
         return None
 
     root = Path(data_dir) / "ex_previous_context"
+    key = normalize_chat_id(chat_id) if chat_id else ""
     pasted = ""
-    if chat_id:
-        stored = root / f"{normalize_chat_id(chat_id)}.txt"
+    if key:
+        stored = root / f"{key}.txt"
         if stored.exists():
             try:
                 pasted = stored.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 pasted = ""
+
+    # The paste is still first because it is what the download button produced by hand. The folder is
+    # the written half of the feature, and a new chat reaches it through the carry pointer rather
+    # than by being told which chat it came from.
+    if not pasted and key:
+        source = resolve_source(data_dir, key, "", consume=True)
+        pasted = read_chat(data_dir, source)
+
     if not pasted:
         return None
 
     return previous_context_message(pasted, settings)
+
+
+def rollover_check(shape_report: dict, settings: dict) -> bool:
+    """Whether this turn crossed the rollover point.
+
+    Reads the count before trimming. A post-trim count would move the rollover point depending on how
+    much tool output happened to be stale, which is not a property of the chat.
+    """
+    try:
+        return threshold_crossed(
+            int(shape_report.get("tokens_before") or 0),
+            int(shape_report.get("budget") or 0),
+            float(settings.get("rolloverThreshold") or 0.7),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def mark_rollover(data_dir: Path | str, chat_id: str, user_id: str = "") -> dict:
+    """Record that the next chat inherits this one. Consumed once, by the first new chat that reads it."""
+    try:
+        return mark_carry(data_dir, normalize_chat_id(chat_id), user_id)
+    except Exception:
+        log.exception("EX rollover carry failed")
+        return {}
+
+
+def rollover_index_block(data_dir: Path | str, chat_id: str, settings: dict, user_id: str = "") -> str:
+    """Id index for the chat this one is reading from. Ids and excerpts only; the blocks stay on disk
+    until they are cited."""
+    try:
+        source = resolve_source(data_dir, normalize_chat_id(chat_id), user_id, consume=False)
+        return index_block(data_dir, source, settings)
+    except Exception:
+        log.exception("EX reasoning index failed")
+        return ""
+
+
+def reasoning_on_demand(data_dir: Path | str, chat_id: str, text: str, settings: dict, user_id: str = "") -> list[dict]:
+    """Blocks for ids cited in the incoming text. An id is an address, so this is a lookup, not a
+    similarity guess, and it costs nothing when no id is cited."""
+    try:
+        source = resolve_source(data_dir, normalize_chat_id(chat_id), user_id, consume=False)
+        blocks = on_demand(data_dir, source, text, settings)
+        return [{"role": "system", "content": f"[REASONING {block['section_id']}]\n{block['content']}"} for block in blocks]
+    except Exception:
+        log.exception("EX reasoning retrieval failed")
+        return []
+
+
+def record_saved_message(
+    data_dir: Path | str,
+    chat_id: str,
+    chat: dict,
+    settings: dict,
+    user_id: str = "",
+) -> dict:
+    """Writer call site, reached from the message save path.
+
+    Written from the whole branch rather than from the single message, so an edit rewrites its section
+    instead of appending a second copy, and the id mapping stays in step with the text.
+    """
+    if not settings.get("rollover"):
+        return {"written": False, "reason": "rollover is off"}
+    try:
+        key = normalize_chat_id(chat_id)
+        existing = rollover_manifest(data_dir, key)
+        return store_chat(
+            data_dir,
+            key,
+            branch_order(chat),
+            settings,
+            user_id,
+            existing.get("source_chat_id") or "",
+        )
+    except Exception:
+        log.exception("EX rolling context write failed")
+        return {"written": False, "reason": "error"}
 
 
 def drain_steering(messages: list[dict], chat_id: str, settings: dict, data_dir: Path | str, *, turn_open: bool = True) -> dict:

@@ -40,6 +40,13 @@ export type ExSettings = {
 	previousContext: boolean;
 	previousContextChars: number;
 	previousContextAsSystem: boolean;
+	rollover: boolean;
+	rolloverThreshold: number;
+	rolloverMaxChars: number;
+	reasoningFiles: boolean;
+	reasoningOnDemand: boolean;
+	reasoningExcerptChars: number;
+	rolloverCarryOnce: boolean;
 	steeringQueue: boolean;
 	drainSteeringAtBoundary: boolean;
 	steeringMode: string;
@@ -90,6 +97,13 @@ export const EX_DEFAULTS: ExSettings = {
 	previousContext: true,
 	previousContextChars: 12000,
 	previousContextAsSystem: true,
+	rollover: true,
+	rolloverThreshold: 0.7,
+	rolloverMaxChars: 60000,
+	reasoningFiles: true,
+	reasoningOnDemand: true,
+	reasoningExcerptChars: 160,
+	rolloverCarryOnce: true,
 	steeringQueue: true,
 	drainSteeringAtBoundary: true,
 	steeringMode: 'next_iteration',

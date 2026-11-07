@@ -101,9 +101,13 @@ from open_webui.utils.ex_wiring import (
     index_chat_memory,
     journal_window,
     loop_check,
+    mark_rollover,
     read_previous_context,
+    reasoning_on_demand,
     retrieve_chat_memory,
     retry_call,
+    rollover_check,
+    rollover_index_block,
 )
 from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
 from open_webui.utils.files import (
@@ -2276,7 +2280,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     ex_context_blocks = []
     if ex_settings['enabled'] and ex_settings.get('previousContext'):
         try:
-            ex_previous_context = read_previous_context(DATA_DIR, metadata.get('chat_id', ''), ex_settings)
+            ex_user_id = getattr(user, 'id', '') or ''
+            ex_previous_context = read_previous_context(DATA_DIR, metadata.get('chat_id', ''), ex_settings, ex_user_id)
             if ex_previous_context:
                 if not ex_settings.get('previousContextAsSystem'):
                     # Delivered as a user message so it reads as an instruction from RiRi rather
@@ -2292,6 +2297,23 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     }
                 )
             metadata['exPreviousContext'] = ex_previous_context
+
+            # Reasoning stays on disk by default. The prompt gets the index of ids, never the blocks,
+            # so a section can be named on a later turn without every turn carrying the whole
+            # transcript. A cited id is a lookup, not a similarity guess, and costs nothing when no
+            # id is cited.
+            if ex_settings.get('reasoningOnDemand'):
+                newest_user = ''
+                for message in reversed(form_data.get('messages', []) or []):
+                    if message.get('role') == 'user' and message.get('content'):
+                        newest_user = str(message.get('content'))
+                        break
+                ex_index = rollover_index_block(DATA_DIR, metadata.get('chat_id', ''), ex_settings, ex_user_id)
+                if ex_index:
+                    ex_context_blocks.append({'role': 'system', 'content': ex_index})
+                ex_context_blocks.extend(
+                    reasoning_on_demand(DATA_DIR, metadata.get('chat_id', ''), newest_user, ex_settings, ex_user_id)
+                )
         except Exception:
             log.exception('EX previous context read failed; continuing with the chat as stored')
 
@@ -2381,6 +2403,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
         form_data['messages'] = shaped
         metadata['exContextWindow'] = ex_shape
+
+        # Rolling context trigger. The fraction is measured on the count before trimming, so the
+        # rollover point does not move depending on how much tool output happened to be stale. What is
+        # written is a pointer for the next chat; nothing here decides what the chat meant.
+        if ex_settings.get('rollover') and rollover_check(ex_shape, ex_settings):
+            ex_carry = mark_rollover(DATA_DIR, metadata.get('chat_id', ''), getattr(user, 'id', '') or '')
+            if ex_carry:
+                metadata['exRollover'] = ex_carry
     except Exception:
         log.exception('EX context window shaping failed; falling back to the unshaped request')
         for block in reversed(ex_context_blocks):

@@ -4,6 +4,10 @@ Read-only by design. The EX settings tab must report truth, so this router only
 reads: the launcher handshake, the effective EX settings for the requesting user,
 and the per-chat journal the fork already wrote. It never mutates a database except
 through the guarded import path, which is dry-run unless explicitly forced.
+
+Two rolling-context routes write, and both write files rather than the database: the
+paste route stores text the user supplied, and the rollover route renders a chat that is
+already stored. Neither one invents content, and neither one paraphrases.
 """
 
 import logging
@@ -23,6 +27,19 @@ from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
 from open_webui.utils.ex_settings import resolve_ex_settings
+from open_webui.utils.ex_rollover import (
+    FOLDER,
+    SECTION_ID,
+    branch_order,
+    manifest,
+    mark_carry,
+    read_index,
+    read_reasoning,
+    resolve_source,
+    store_chat,
+)
+from open_webui.utils.ex_steering import normalize_chat_id
+from open_webui.models.chats import Chats
 from open_webui.tools import builtin_registry
 from open_webui.utils.ex_wiring import (
     chat_memory_status,
@@ -315,6 +332,113 @@ async def ex_context(
         except (ValueError, OSError):
             last_parse = {"parsed_from": "none", "reason": "stored file unreadable"}
     return {"settings": context_status(settings, last_parse), "stored_path": str(stored)}
+
+
+@router.post("/context")
+async def ex_context_store(
+    chat_id: str = Query(...),
+    text: str = Query(...),
+    user=Depends(get_current_user),
+):
+    """Store a pasted export for a chat.
+
+    Kept in the flat shape the reader prefers, so a hand-made export from the download button is
+    never overwritten by the writer's folder. The folder and the flat file are two different sources
+    and the reader's order is stated in ex_wiring, not guessed here.
+    """
+    settings = resolve_ex_settings(user)
+    if not settings.get("previousContext"):
+        raise HTTPException(status_code=403, detail="previous context is disabled")
+
+    key = normalize_chat_id(chat_id)
+    if not key:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+
+    root = Path(DATA_DIR) / FOLDER
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{key}.txt").write_text(text, encoding="utf-8")
+    except OSError:
+        raise HTTPException(status_code=500, detail="could not write the context file")
+
+    return {"stored_path": str(root / f"{key}.txt"), "chars": len(text)}
+
+
+@router.get("/context/{chat_id}/index")
+async def ex_context_index(chat_id: str, user=Depends(get_current_user)):
+    """The id index for the chat this chat reads from. Ids, roles, and excerpts only.
+
+    The blocks are not included. The index is what lets a model name a section it wants; the block is
+    fetched by the route below only when it is asked for.
+    """
+    settings = resolve_ex_settings(user)
+    key = normalize_chat_id(chat_id)
+    if not key:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+
+    source = resolve_source(DATA_DIR, key, getattr(user, "id", "") or "", consume=False)
+    return {
+        "chat_id": key,
+        "source_chat_id": source,
+        "index": read_index(DATA_DIR, source),
+        "manifest": manifest(DATA_DIR, source),
+    }
+
+
+@router.get("/context/{chat_id}/reasoning/{section_id}")
+async def ex_context_reasoning(chat_id: str, section_id: str, user=Depends(get_current_user)):
+    """One reasoning block by id. The id is the only way in; nothing here guesses which block was
+    meant, and a malformed id returns nothing rather than the nearest file."""
+    settings = resolve_ex_settings(user)
+    if not settings.get("reasoningOnDemand"):
+        raise HTTPException(status_code=403, detail="reasoning retrieval is disabled")
+
+    key = normalize_chat_id(chat_id)
+    if not key:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+    if not SECTION_ID.fullmatch(section_id or ""):
+        raise HTTPException(status_code=400, detail="section id must be R-<hex>")
+
+    source = resolve_source(DATA_DIR, key, getattr(user, "id", "") or "", consume=False)
+    block = read_reasoning(DATA_DIR, source, section_id)
+    if not block:
+        raise HTTPException(status_code=404, detail="no reasoning block for that id")
+    return {"chat_id": source, "section_id": section_id, "content": block}
+
+
+@router.post("/rollover")
+async def ex_rollover_now(chat_id: str = Query(...), user=Depends(get_current_user)):
+    """Roll a chat over on demand: render the stored branch, write the folder, mark the carry.
+
+    Worth having even though the writer runs on every message save, because a rollover asked for by
+    hand has to be exact. The branch is walked, not the insertion order, so a forked chat rolls over
+    as the branch the user is looking at.
+    """
+    settings = resolve_ex_settings(user)
+    if not settings.get("rollover"):
+        raise HTTPException(status_code=403, detail="rolling context is disabled")
+
+    key = normalize_chat_id(chat_id)
+    if not key:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+
+    chat = await Chats.get_chat_by_id(key)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="chat not found")
+
+    chat_dict = chat.model_dump() if hasattr(chat, "model_dump") else chat
+    user_id = getattr(user, "id", "") or ""
+    existing = manifest(DATA_DIR, key)
+    report = store_chat(
+        DATA_DIR,
+        key,
+        branch_order(chat_dict),
+        settings,
+        user_id,
+        existing.get("source_chat_id") or "",
+    )
+    carry = mark_carry(DATA_DIR, key, user_id)
+    return {"report": report, "carry": carry}
 
 
 @router.post("/steering")

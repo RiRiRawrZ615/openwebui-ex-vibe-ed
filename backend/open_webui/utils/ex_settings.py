@@ -62,6 +62,16 @@ DEFAULTS = {
     "previousContext": True,
     "previousContextChars": 12000,
     "previousContextAsSystem": True,
+    # Rolling context. The writer keeps a verbatim copy of the chat on disk in the export shape and
+    # the reader hands it to the next chat, so a chat can be continued without anything being
+    # paraphrased on the way in. The engine is not asked to be clever about this; the app owns it.
+    "rollover": True,
+    "rolloverThreshold": 0.7,      # fraction of the window that fires the rollover
+    "rolloverMaxChars": 60000,     # size of the block fed back; the file on disk keeps everything
+    "reasoningFiles": True,        # one file per reasoning block, addressed by id
+    "reasoningOnDemand": True,     # ids are attached to sections so a block can be pulled back
+    "reasoningExcerptChars": 160,  # length of one index line
+    "rolloverCarryOnce": True,     # a carry pointer is consumed the first time a new chat reads it
     # Mid generation steering. The stock queue waits for generation to finish, so it is
     # send_after. The redirect form is injection at the next iteration boundary.
     "steeringQueue": True,

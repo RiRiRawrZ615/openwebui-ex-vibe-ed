@@ -12,7 +12,8 @@ from typing import Any, Literal
 
 # local imports
 from open_webui.models.notifications import emit_changes
-from open_webui.env import ENABLE_ADMIN_CHAT_ACCESS
+from open_webui.env import DATA_DIR, ENABLE_ADMIN_CHAT_ACCESS
+from open_webui.utils.ex_wiring import record_saved_message
 from open_webui.models.comments import delete_resource_comments
 from open_webui.internal.db import Base, JSONField, get_async_db, get_async_db_context
 from open_webui.models.access_grants import AccessGrants
@@ -70,6 +71,19 @@ def chat_message_list(chat: dict) -> list:
     if isinstance(messages, dict):
         return list(messages.values())
     return messages if isinstance(messages, list) else []
+
+
+async def _ex_settings_for_writer(user_id: str) -> dict:
+    """Settings for the rolling-context writer hook.
+
+    Imported inside the function because models.users and models.chats reference each other, and
+    resolving settings here keeps the gate in the single resolver rather than a hard-coded flag.
+    """
+    from open_webui.models.users import Users
+    from open_webui.utils.ex_settings import resolve_ex_settings
+
+    user = await Users.get_user_by_id(user_id)
+    return resolve_ex_settings(user)
 
 
 def chat_search_snippet(chat: dict, search_text: str, max_length: int = 200) -> str | None:
@@ -1423,6 +1437,19 @@ class ChatTable:
                     chat_item.updated_at = int(time.time())
 
                 updated_chat = ChatModel.model_validate(chat_item)
+
+                # Rolling context writer. The message save is the only point that can guarantee the
+                # dump holds the reply: the request path sees the history before generation, so the
+                # last turn of a chat would be the one thing missing when a rollover happens. Gated on
+                # a completed message, because the streaming path upserts the same message id once per
+                # chunk, and a write per chunk would be a file write per token group.
+                if message.get('done', True):
+                    try:
+                        ex_settings = await _ex_settings_for_writer(chat_item.user_id or '')
+                        if ex_settings.get('rollover'):
+                            record_saved_message(DATA_DIR, id, chat, ex_settings, chat_item.user_id or '')
+                    except Exception:
+                        log.exception('EX rolling context write failed; the chat is saved, the dump is not')
 
             return updated_chat
         except Exception:
