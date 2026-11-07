@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -223,17 +224,86 @@ OPENAI_CONFIG_KEYS = {
 
 async def get_openai_config() -> dict:
     values = await Config.get_many(*OPENAI_CONFIG_KEYS.values())
-    return {field: values[storage_key] for field, storage_key in OPENAI_CONFIG_KEYS.items() if storage_key in values}
-
-
-async def get_openai_runtime_config() -> tuple[bool, list[str], list[str], dict]:
-    values = await Config.get_many('openai.enable', 'openai.api_base_urls', 'openai.api_keys', 'openai.api_configs')
-    return (
-        values.get('openai.enable'),
+    # Same helper as the runtime resolver. Without this the frontend reads the raw
+    # stored order, pushes a new entry onto it, and writes that back through
+    # /config/update, so a read-time-only enforcement is erased by the first save
+    # and api_configs can end up keyed at the wrong index.
+    urls, keys, configs = ensure_strata_connection(
         values.get('openai.api_base_urls') or [],
         values.get('openai.api_keys') or [],
         values.get('openai.api_configs') or {},
     )
+    return {
+        'ENABLE_OPENAI_API': values.get('openai.enable') or True,
+        'OPENAI_API_BASE_URLS': urls,
+        'OPENAI_API_KEYS': keys,
+        'OPENAI_API_CONFIGS': configs,
+    }
+
+
+# Fork: strata is the home engine, so it is guaranteed at read time. The stored
+# connection list always wins over the environment, so exporting OPENAI_API_BASE_URLS
+# can never make the UI list strata; this is the only place that can. Pure read, nothing
+# written to the database. Idempotent, and index alignment is preserved because the
+# api_configs keys are strings of the list index, so inserting at 0 shifts them.
+STRATA_BASE_URL = os.getenv('OWV_STRATA_BASE_URL', 'http://127.0.0.1:8004/v1')
+STRATA_MODEL_ID = os.getenv('OWV_STRATA_MODEL_ID', 'qwen3.8-flash-next-iq2_xs')
+OWV_ONLY_STRATA = os.getenv('OWV_ONLY_STRATA', '0') == '1'
+
+
+def _strata_config():
+    return {
+        'enable': True,
+        'tags': [],
+        'prefix_id': '',
+        'model_ids': [],
+        'connection_type': 'external',
+        'auth_type': 'bearer',
+        'passthrough_params': [],
+        'provider': 'llama.cpp',
+    }
+
+
+def ensure_strata_connection(api_base_urls, api_keys, api_configs):
+    urls = list(api_base_urls or [])
+    keys = list(api_keys or [])
+    cfgs = {str(k): dict(v) for k, v in (api_configs or {}).items()}
+
+    if OWV_ONLY_STRATA:
+        return [STRATA_BASE_URL], ['none'], {'0': _strata_config()}
+
+    if not urls:
+        # Preserve any legacy URL-keyed entries; they are inert without a
+        # matching index but dropping them would silently lose user config.
+        return [STRATA_BASE_URL], ['none'], {'0': _strata_config(), **cfgs}
+
+    if STRATA_BASE_URL in urls:
+        idx = str(urls.index(STRATA_BASE_URL))
+        entry = cfgs.get(idx, _strata_config())
+        entry['enable'] = True
+        entry['provider'] = entry.get('provider') or 'llama.cpp'
+        cfgs[idx] = entry
+        return urls, keys, cfgs
+
+    # strata absent: insert at index 0, shift index-keyed entries, keep URL-keyed
+    # (legacy) entries untouched, and pad keys to match the new length.
+    new_urls = [STRATA_BASE_URL] + urls
+    new_keys = ['none'] + keys + [''] * (len(urls) - len(keys))
+    new_cfgs = {}
+    for k, v in cfgs.items():
+        new_cfgs[str(int(k) + 1) if k.isdigit() else k] = v
+    new_cfgs['0'] = _strata_config()
+    return new_urls, new_keys, new_cfgs
+
+
+async def get_openai_runtime_config() -> tuple[bool, list[str], list[str], dict]:
+    values = await Config.get_many('openai.enable', 'openai.api_base_urls', 'openai.api_keys', 'openai.api_configs')
+    urls, keys, configs = ensure_strata_connection(
+        values.get('openai.api_base_urls') or [],
+        values.get('openai.api_keys') or [],
+        values.get('openai.api_configs') or {},
+    )
+    return (values.get('openai.enable') or True, urls, keys, configs)
 
 
 async def normalize_openai_api_keys(api_base_urls: list[str], api_keys: list[str]) -> list[str]:
