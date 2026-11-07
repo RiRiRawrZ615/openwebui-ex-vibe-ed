@@ -365,3 +365,74 @@ export const forgetExMemory = async (
 ): Promise<{ deleted: number } | { error: string }> => {
 	return jsonRequest(`/ex/memory?chat_id=${encodeURIComponent(chatId)}`, token, 'DELETE');
 };
+
+/** One shipped builtin tool, as reported by the registry. */
+export type ExBuiltin = {
+	slug: string;
+	name: string;
+	tool_id: string;
+	/** Function names this tool exposes to the model. */
+	specs: string[];
+	enabled: boolean;
+	/** 'builtin' when running the shipped file, 'overlay' when a user edit is in place. */
+	source: 'builtin' | 'overlay' | string;
+	has_overlay: boolean;
+	overlay_stale: boolean;
+	based_on?: string;
+	builtin_hash?: string;
+	updated_at?: number;
+	/** Populated instead of throwing, so one broken tool cannot blank the whole tab. */
+	load_error: string | null;
+};
+
+export type ExBuiltinList = {
+	builtins: ExBuiltin[];
+	can_edit: boolean;
+};
+
+/** Detail view, which additionally carries the source for the editor. */
+export type ExBuiltinDetail = ExBuiltin & {
+	source_text: string;
+	source_origin: string;
+	is_admin: boolean;
+};
+
+// --- Builtin tools -----------------------------------------------------------------------
+
+export const getExBuiltins = async (token: string): Promise<ExBuiltinList | { error: string }> =>
+	jsonRequest('/ex/builtins', token);
+
+export const getExBuiltin = async (
+	token: string,
+	slug: string
+): Promise<ExBuiltinDetail | { error: string }> =>
+	jsonRequest(`/ex/builtins/${encodeURIComponent(slug)}`, token);
+
+export const setExBuiltinEnabled = async (
+	token: string,
+	slug: string,
+	enabled: boolean
+): Promise<ExBuiltin | { error: string }> =>
+	jsonRequest(
+		`/ex/builtins/${encodeURIComponent(slug)}/enabled?${new URLSearchParams({ enabled: String(enabled) }).toString()}`,
+		token,
+		'POST'
+	);
+
+/**
+ * Save a whole-file user edit. The backend compile-checks the source and returns 400 on a
+ * syntax error, so a broken save never reaches disk.
+ */
+export const saveExBuiltinOverlay = async (
+	token: string,
+	slug: string,
+	source: string
+): Promise<ExBuiltin | { error: string }> =>
+	jsonRequest(`/ex/builtins/${encodeURIComponent(slug)}/overlay`, token, 'PUT', { source });
+
+/** Drop the user edit and fall back to the shipped builtin. */
+export const revertExBuiltinOverlay = async (
+	token: string,
+	slug: string
+): Promise<ExBuiltin | { error: string }> =>
+	jsonRequest(`/ex/builtins/${encodeURIComponent(slug)}/overlay`, token, 'DELETE');

@@ -23,6 +23,7 @@ from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
 from open_webui.utils.ex_settings import resolve_ex_settings
+from open_webui.tools import builtin_registry
 from open_webui.utils.ex_wiring import (
     chat_memory_status,
     forget_chat_memory,
@@ -492,3 +493,107 @@ async def ex_memory_forget(
     if not is_saved_chat_id(chat_id):
         raise HTTPException(status_code=400, detail='a saved chat_id is required')
     return forget_chat_memory(DATA_DIR, chat_id)
+
+
+# --- Builtin tools ------------------------------------------------------------------------
+#
+# The nine shipped tools, their switch state, and their user-edit overlays. The registry does
+# the work; these endpoints exist so the settings tab can present it.
+#
+# Admin gating: enabling a tool changes what the model can do for every user of the instance, so
+# the write paths require an admin. Reading the list is open to any signed-in user, because the
+# settings tab has to render something for a non-admin and a blank tab is worse than a read-only
+# one. The registry itself does not check permissions; that is this layer's job.
+
+
+def _require_admin(user) -> None:
+    if getattr(user, 'role', '') != 'admin':
+        raise HTTPException(status_code=403, detail='admin required to change builtin tools')
+
+
+@router.get('/builtins')
+async def ex_builtins_list(user: User = Depends(get_current_user)):
+    """Every shipped builtin: name, exposed functions, enabled state, overlay state.
+
+    A load failure is reported per tool rather than raised, so one broken builtin does not make
+    the whole tab unusable. That matters most for a broken overlay, which is exactly the case
+    where the user needs the tab to work in order to fix it.
+    """
+    return {
+        'builtins': builtin_registry.describe_all(),
+        'can_edit': getattr(user, 'role', '') == 'admin',
+    }
+
+
+@router.get('/builtins/{slug}')
+async def ex_builtin_detail(slug: str, user: User = Depends(get_current_user)):
+    if slug not in builtin_registry.load_manifest():
+        raise HTTPException(status_code=404, detail=f'unknown builtin: {slug}')
+
+    info = builtin_registry.describe(slug)
+
+    # The current effective source, so the editor opens on what is actually running rather than
+    # on the shipped file when an overlay is in place.
+    try:
+        source, origin, _ = builtin_registry.resolve_source(slug)
+    except Exception as exc:  # noqa: BLE001
+        source, origin = '', 'unavailable'
+        info['load_error'] = info.get('load_error') or f'{type(exc).__name__}: {exc}'
+
+    info['source_text'] = source
+    info['source_origin'] = origin
+    info['is_admin'] = getattr(user, 'role', '') == 'admin'
+    return info
+
+
+@router.post('/builtins/{slug}/enabled')
+async def ex_builtin_set_enabled(
+    slug: str,
+    enabled: bool = Query(...),
+    user: User = Depends(get_current_user),
+):
+    _require_admin(user)
+    try:
+        builtin_registry.set_enabled(slug, enabled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f'unknown builtin: {slug}')
+    return builtin_registry.describe(slug)
+
+
+@router.put('/builtins/{slug}/overlay')
+async def ex_builtin_save_overlay(
+    slug: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    """Save a user edit as a whole-file overlay.
+
+    A syntax error is rejected here with a 400 rather than stored, so a bad save cannot leave the
+    tool broken on next load. The check is compile(), which proves it parses, not that it works.
+    """
+    _require_admin(user)
+
+    body = await request.json()
+    text = body.get('source')
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail='source is required')
+
+    try:
+        builtin_registry.save_overlay(slug, text)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f'unknown builtin: {slug}')
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return builtin_registry.describe(slug)
+
+
+@router.delete('/builtins/{slug}/overlay')
+async def ex_builtin_revert_overlay(slug: str, user: User = Depends(get_current_user)):
+    """Drop the user edit and go back to the shipped builtin."""
+    _require_admin(user)
+    try:
+        result = builtin_registry.revert_overlay(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f'unknown builtin: {slug}')
+    return {**result, **builtin_registry.describe(slug)}

@@ -14,6 +14,9 @@
 		getExStatus,
 		getExBackendCheck,
 		getExInstallPlan,
+		getExDiscover,
+		postExDiscoverManual,
+		type ExDiscoverReport,
 		getExTheme,
 		getExRecovery,
 		getExModules,
@@ -38,6 +41,8 @@
 	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { exSlots, refreshSlots } from '$lib/stores/exSlots';
 	import { buildTheme } from '$lib/utils/exTheme';
+	import BuiltinsSection from './BuiltinsSection.svelte';
+	import HelpSection from './HelpSection.svelte';
 
 	const i18n: Writable<i18nType> = getContext('i18n');
 	const dispatch = createEventDispatcher();
@@ -49,6 +54,48 @@
 	let backendCheck: ExBackendCheck | null = $state(null);
 	let plan: ExInstallPlan | null = $state(null);
 	let importReport: ExImportReport | null = $state(null);
+
+	// Setup workflow state.
+	//
+	// The pattern the whole flow turns on: a machine that already has the engines is simply the
+	// case where probe() finds them. So there is one workflow, not a first-run one and a
+	// returning one, and what differs is only whether anything is missing when the page opens.
+	let discover: Record<string, ExDiscoverReport> | null = $state(null);
+	let discoverMissing: string[] = $state([]);
+	let discovering = $state(false);
+	let manualFor = $state<string | null>(null);
+	let manualPath = $state('');
+	let manualBusy = $state(false);
+
+	const probe = async () => {
+		discovering = true;
+		const res = await getExDiscover(localStorage.token, []);
+		if ('error' in res) {
+			toast.error(`${res.error}`);
+		} else {
+			discover = res.components;
+			discoverMissing = res.missing ?? [];
+		}
+		discovering = false;
+	};
+
+	const submitManual = async (component: string) => {
+		manualBusy = true;
+		// The backend validates that the path exists, is a file and is executable. It does not run
+		// it, so a wrong binary is caught here rather than at first use.
+		const res = await postExDiscoverManual(localStorage.token, component, manualPath);
+		if ('error' in res) {
+			toast.error(`${res.error}`);
+		} else if (!res.accepted) {
+			toast.error(res.reason);
+		} else {
+			toast.success(`${component}: ${res.path}`);
+			manualFor = null;
+			manualPath = '';
+			await probe();
+		}
+		manualBusy = false;
+	};
 
 	let themeReport: Record<string, any> | null = $state(null);
 	let recoveryReport: Record<string, any> | null = $state(null);
@@ -298,6 +345,9 @@
 	};
 
 	onMount(() => {
+		// Probe first, so a machine that already has the engines shows that immediately and needs no
+		// action. The setup steps only appear for what is actually missing.
+		probe();
 		refresh();
 		refreshTheme();
 		refreshRecovery();
@@ -391,6 +441,98 @@
 						</UserSettingRow>
 					{/if}
 				{/each}
+			<!-- Setup: what this machine has, and what to do about anything missing. -->
+			<div class="mt-4 border-t border-gray-100 pt-3 dark:border-gray-850">
+			<div class="mb-2 flex items-center justify-between">
+				<span class="text-xs font-medium text-gray-700 dark:text-gray-300">This machine</span>
+				<button
+					type="button"
+					class="text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
+					on:click={probe}>Re-check</button
+				>
+			</div>
+
+			{#if discovering}
+				<div class="flex items-center gap-2 py-2 text-xs text-gray-500">
+					<Spinner /> Checking for installed engines…
+				</div>
+			{:else if discover}
+				{#if discoverMissing.length === 0}
+					<p class="mb-2 text-xs text-green-700 dark:text-green-400">
+						Everything needed is already installed. Nothing to do.
+					</p>
+				{:else}
+					<p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+						Not found: {discoverMissing.join(', ')}. Install them above, or point at the
+						binary you already have.
+					</p>
+				{/if}
+
+				<div class="space-y-1.5">
+					{#each Object.entries(discover) as [component, report] (component)}
+						<div
+							class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-100 px-2 py-1.5 dark:border-gray-850"
+						>
+							<div class="min-w-0">
+								<div class="flex items-center gap-1.5 text-xs">
+									{#if report.found}
+										<span class="text-green-600 dark:text-green-400">●</span>
+									{:else}
+										<span class="text-gray-300 dark:text-gray-600">○</span>
+									{/if}
+									<span class="font-medium text-gray-700 dark:text-gray-300">{component}</span>
+									{#if report.source === 'path'}
+										<span class="text-gray-400 dark:text-gray-500">on PATH</span>
+									{:else if report.source === 'candidate'}
+										<span class="text-gray-400 dark:text-gray-500">known location</span>
+									{/if}
+								</div>
+								<div
+									class="truncate font-mono text-[0.625rem] text-gray-400 dark:text-gray-500"
+									title={report.path || ''}
+								>
+									{report.found ? report.path : `checked ${report.candidates_tried.length} locations`}
+								</div>
+							</div>
+
+							<button
+								type="button"
+								class="shrink-0 text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
+								on:click={() => {
+									manualFor = manualFor === component ? null : component;
+									manualPath = report.path || '';
+								}}
+							>{report.found ? 'Change' : 'Locate'}</button
+							>
+						</div>
+
+						{#if manualFor === component}
+							<div class="flex items-center gap-2 pl-2">
+								<input
+									type="text"
+									bind:value={manualPath}
+									placeholder="/path/to/binary"
+									class="h-7 min-w-0 flex-1 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 font-mono text-[0.6875rem] text-gray-700 outline-hidden focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300"
+								/>
+								<button
+									type="button"
+									disabled={manualBusy || !manualPath.trim()}
+									class="shrink-0 rounded-lg bg-gray-900 px-2 py-1 text-[0.6875rem] font-medium text-white disabled:opacity-50 dark:bg-white dark:text-gray-900"
+									on:click={() => submitManual(component)}>Use</button
+								>
+								{#if manualBusy}<Spinner />{/if}
+							</div>
+						{/if}
+					{/each}
+				</div>
+			{:else}
+				<button
+					type="button"
+					class="text-[0.6875rem] text-gray-500 underline hover:text-gray-900 dark:hover:text-white"
+					on:click={probe}>Check for installed engines</button
+				>
+			{/if}
+			</div>
 			{/if}
 		</UserSettingSection>
 
@@ -1562,6 +1704,8 @@
 			{/if}
 		</UserSettingSection>
 
+		<BuiltinsSection />
+
 		<UserSettingSection title={$i18n.t('settings.personal.vibes.sections.trim.title')}>
 			<p class="mb-2 text-[0.6875rem] text-gray-500 dark:text-gray-400">
 				{$i18n.t('settings.personal.vibes.trim.gate.description')}
@@ -1623,4 +1767,5 @@
 			</p>
 		{/if}
 	{/if}
-</div>
+		<HelpSection />
+	</div>

@@ -489,3 +489,43 @@ overlay with a syntax error, and stale-overlay detection after the shipped built
   returns everything the UI needs.
 - The Setup tab.
 - README section documenting that the tools ship enabled, plus the GitHub icon.
+
+---
+
+## 2026-11-06 · Session 6: builtin UI, Setup tab, Help tab, README
+
+### Backend
+Five endpoints in `routers/ex.py`: `GET /ex/builtins` (list + can_edit), `GET /ex/builtins/{slug}`
+(detail + current source for the editor), `POST /ex/builtins/{slug}/enabled`,
+`PUT /ex/builtins/{slug}/overlay`, `DELETE /ex/builtins/{slug}/overlay`.
+
+Reads are open to any signed-in user because the settings tab must render for a non-admin, and a
+blank tab is worse than a read-only one. Writes require admin, checked in the router rather than
+the registry, because the registry has no notion of the request.
+
+An overlay save with a syntax error returns 400 and is **not** written, so a mistyped edit cannot
+break the tool on next load. The check is `compile()`, which proves it parses, not that it works.
+
+### Frontend
+- **`BuiltinsSection.svelte`** — per-tool switch, exposed function names, `edited` badge,
+  `update available` badge for a stale overlay, `error` badge plus the exception for a tool that
+  fails to import, whole-file editor, and revert. Patch-in-place on toggle so the list does not
+  flicker, and `$derived` values declared as `let x = $derived(...)` (the bare form is a parse
+  error).
+- **`HelpSection.svelte`** — 15 entries in three groups: using the app, tools, administrators.
+  Written to be read at the moment something looks odd, so entries give the symptom where there
+  is one.
+- **Setup workflow** folded into the existing Install section rather than made a separate tab. It
+  probes discovery on mount, so a machine that already has the engines shows that immediately and
+  the install steps only appear for what is actually missing. One workflow, two entry conditions.
+  Manual binary locate is per component, validated server-side (exists, file, executable, and the
+  component must be discoverable), with the reason shown on rejection.
+
+### README
+Added an `## Open Web Vibes` section after the upstream header, without altering upstream content.
+Documents that the tools ship enabled, the tool table, the SSH warning for the two fleet tools,
+the search replacement, the overlay behaviour, the stats semantics, and the in-app Help tab.
+
+### Build
+Clean. `Builtin tools`, `This machine`, `Revert to shipped` and a Help answer string all verified
+present in `build/_app/immutable/chunks/DPkvbdca.js`.

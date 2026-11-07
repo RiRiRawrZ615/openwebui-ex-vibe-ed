@@ -39,6 +39,77 @@
 
 [Explore Open WebUI →](https://docs.openwebui.com/)
 
+---
+
+## Open Web Vibes
+
+This is **Open Web Vibes**, a fork of Open WebUI built for running local models on your own
+hardware. The chat interface is the one you know. What changed is how the app talks to its
+inference engine, how it presents a turn, and what ships with it.
+
+Upstream licence and notices are unchanged. Open WebUI remains the project this is built on.
+
+### Nine tools are built in
+
+You do not install these. They ship with the app and are **enabled by default**, so they work on
+first launch. Each can be switched off individually under **Settings → OpenWebVibes → Builtin
+tools**.
+
+| Tool | What it does |
+| --- | --- |
+| **Web Search** | Fetches pages and keeps them on disk, so a follow-up question about the same page does not refetch it. Can slice or search a page instead of pulling it in whole, and does multi-source research. |
+| **Reddit + X Reader** | Reads posts, threads, timelines and profiles from Reddit and X. |
+| **YouTube Video Parser** | Reads a video's transcript. |
+| **YouTube Visual Reader** | Describes what is on screen, with timestamps. |
+| **Reverse Engineering** | Helpers for inspecting binaries: triage, decompilation, disassembly, string and symbol search. |
+| **Fleet Ops** | Operates a fleet of machines: discovery, sessions, persistent shells. |
+| **Fleet SSH + RustDesk** | Runs commands over SSH, transfers files, manages a credential vault and remote sessions. |
+| **Calculator** | Expression evaluation and equation solving. |
+| **Cognitive Memory Vault** | Indexes and searches your own saved context. |
+
+**Two of these reach beyond the local machine.** Fleet Ops and Fleet SSH can run commands on
+remote hosts over SSH and read credentials from a local vault. They are inert on a machine with no
+vault, but if you do not run a fleet, that is the pair to switch off first.
+
+### Web search is replaced, not added
+
+Stock Open WebUI bundled a DuckDuckGo-backed search. Here it is **replaced**. There is one search
+tool and no ambiguity about which one ran. It is cache-first: a page is fetched once, then read
+from disk, which makes follow-up questions cheap and keeps a long document from filling the
+context window.
+
+### Edits survive updates
+
+Any builtin can be edited, and your edit is stored **separately from the tool**. It is used
+instead of the built-in one, and an app update does not overwrite it. If the shipped tool changes
+after you edited it, the row is marked so you can see that your edit is hiding a newer version.
+There is a one-click revert.
+
+### Other things worth knowing
+
+- **Reasoning is kept next to the answer.** Thinking renders as its own collapsible line, in
+  place, rather than being bundled in with tool activity.
+- **Tool calls are collected, not inline.** A turn's tool activity goes into one collapsible panel
+  at the end of the reply, so the reply body stays continuous prose. Individual calls are still
+  expandable inside it.
+- **Stats are honest about prompt size.** `in` reports the current request, not a running total.
+  Every round of a multi-step turn re-sends the whole conversation, so adding prompt counts
+  together would double-count the same context.
+- **Streaming is paced**, so a backend that sends text in bursts still reads smoothly.
+- **The blinking cursor is gone.** With a chunked engine it drew attention to the pauses rather
+  than the words.
+
+### Help inside the app
+
+**Settings → OpenWebVibes → Help** answers the questions these changes raise, including where
+things are stored and how to back up an install. It is written to be read at the moment something
+looks odd, which is when it is actually useful.
+
+### Reporting something
+
+Open an issue with what you did, what you expected, and what happened. If a tool failed, its row
+under Builtin tools shows the exception; that text is the most useful thing to include.
+
 ### Installation
 
 #### Python
