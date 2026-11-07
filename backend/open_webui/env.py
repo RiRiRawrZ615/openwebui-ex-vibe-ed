@@ -1206,6 +1206,18 @@ PIP_PACKAGE_INDEX_OPTIONS = os.getenv('PIP_PACKAGE_INDEX_OPTIONS', '').split()
 # OFFLINE_MODE
 
 ENABLE_VERSION_UPDATE_CHECK = os.getenv('ENABLE_VERSION_UPDATE_CHECK', 'true').lower() == 'true'
+
+# Where the update check points. Upstream's tag stream is not this code's version stream: the fork
+# carries patches upstream does not have, so an 'update available' from open-webui/open-webui
+# describes code that is not running here. The default is the fork. The env var still lets a machine
+# point it back at upstream, and it is read at call time so a settings change takes effect without
+# a restart.
+OWV_UPDATE_REPO = os.getenv('OWV_UPDATE_REPO', 'RiRiRawrZ615/openwebui-ex-vibe-ed')
+OWV_UPDATE_CHECK_CACHE_SECONDS = int(os.getenv('OWV_UPDATE_CHECK_CACHE_SECONDS', '900'))
+# One second was too tight for the GitHub API on a cold connection, which made the About page show
+# no update state at all rather than an error. Kept short on purpose so a slow API never blocks a
+# page load.
+OWV_UPDATE_CHECK_TIMEOUT = float(os.getenv('OWV_UPDATE_CHECK_TIMEOUT', '3'))
 OFFLINE_MODE = os.getenv('OFFLINE_MODE', 'false').lower() == 'true'
 
 if OFFLINE_MODE:

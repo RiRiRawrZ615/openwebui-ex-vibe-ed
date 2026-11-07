@@ -99,6 +99,9 @@ from open_webui.env import (
     ENABLE_TOOL_SERVERS,
     ENABLE_TOOLS,
     ENABLE_VERSION_UPDATE_CHECK,
+    OWV_UPDATE_CHECK_CACHE_SECONDS,
+    OWV_UPDATE_CHECK_TIMEOUT,
+    OWV_UPDATE_REPO,
     ENABLE_WEBSOCKET_SUPPORT,
     EXTERNAL_PWA_MANIFEST_URL,
     GLOBAL_LOG_LEVEL,
@@ -2679,26 +2682,50 @@ async def get_app_version():
     }
 
 
+# The layout calls this on every page load, and every load used to hit GitHub. A ten minute cache
+# keeps the number honest without making the browser pay an API round trip on each render, and the
+# response keeps the same current/latest shape the About page, the admin settings page and the
+# update toast all read.
+_update_check_cache = {}
+
+
 @app.get('/api/version/updates')
 async def get_app_latest_release_version(user=Depends(get_verified_user)):
     if not ENABLE_VERSION_UPDATE_CHECK:
         log.debug(f'Version update check is disabled, returning current version as latest version')
-        return {'current': VERSION, 'latest': VERSION}
+        return {'current': VERSION, 'latest': VERSION, 'repository': OWV_UPDATE_REPO}
+
+    now = time.time()
+    cached = _update_check_cache.get('result')
+    if cached and now - _update_check_cache.get('checked_at', 0) < OWV_UPDATE_CHECK_CACHE_SECONDS:
+        return {**cached, 'cached': True}
+
     try:
-        timeout = aiohttp.ClientTimeout(total=1)
+        timeout = aiohttp.ClientTimeout(total=OWV_UPDATE_CHECK_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
-                'https://api.github.com/repos/open-webui/open-webui/releases/latest',
+                f'https://api.github.com/repos/{OWV_UPDATE_REPO}/releases/latest',
                 ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
                 response.raise_for_status()
                 data = await response.json()
                 latest_version = data['tag_name']
 
-                return {'current': VERSION, 'latest': latest_version[1:]}
+                result = {
+                    'current': VERSION,
+                    'latest': latest_version[1:],
+                    'repository': OWV_UPDATE_REPO,
+                }
+                _update_check_cache['result'] = result
+                _update_check_cache['checked_at'] = now
+                return {**result, 'cached': False}
     except Exception as e:
         log.warning(f'Version update check failed: {e}')
-        return {'current': VERSION, 'latest': None}
+        # A stale answer is still more useful than no answer when GitHub is unreachable, as long as
+        # it is labelled as stale.
+        if cached:
+            return {**cached, 'cached': True, 'stale': True}
+        return {'current': VERSION, 'latest': None, 'repository': OWV_UPDATE_REPO}
 
 
 @app.get('/api/changelog')
