@@ -91,7 +91,12 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
-from open_webui.utils.ex_context_window import DEFAULT_TOOL_SCHEMA_TOKENS, detect_ceiling, shape_request
+from open_webui.utils.ex_context_window import (
+    DEFAULT_TOOL_SCHEMA_TOKENS,
+    detect_ceiling,
+    estimate_tokens,
+    shape_request,
+)
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.models.tools import Tools as ToolStore
@@ -2410,6 +2415,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
         ex_requested_max = (form_data.get('params') or {}).get('max_tokens')
 
+        # The tool definitions are part of the prompt the engine counts. They are attached later in
+        # tool_call_handler, so here they are only known when the caller already put them on the
+        # request. When they are known, measure them; otherwise the settings value is a floor and the
+        # report says which one was used.
+        ex_tool_tokens = 0
+        try:
+            ex_tools = form_data.get('tools') or []
+            if ex_tools:
+                ex_tool_tokens = max(0, estimate_tokens(json.dumps(ex_tools)))
+        except Exception:
+            ex_tool_tokens = 0
+
         shaped, ex_shape = shape_request(
             ex_materialized,
             window=ex_window,
@@ -2418,7 +2435,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
             context_block=ex_block if ex_settings.get('tailInject', True) else None,
             data_dir=DATA_DIR,
-            tool_schema_tokens=int(ex_settings.get('toolSchemaTokens') or DEFAULT_TOOL_SCHEMA_TOKENS),
+            tool_schema_tokens=ex_tool_tokens or int(ex_settings.get('toolSchemaTokens') or DEFAULT_TOOL_SCHEMA_TOKENS),
             settings=ex_settings,
         )
         # The gate re-measures on the materialized list, trims stale tool output first, sheds the
@@ -2432,6 +2449,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             ex_settings,
             getattr(user, 'id', '') or '',
             ex_requested_max,
+            ex_tool_tokens,
         )
         form_data['messages'] = shaped
         metadata['exContextWindow'] = {**ex_shape, 'gate': ex_gate}

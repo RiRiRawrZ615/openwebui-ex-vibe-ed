@@ -28,9 +28,7 @@ Checks:
 import importlib.util, sys, tempfile
 from pathlib import Path
 
-# The repo root is the parent of this file, so the harness runs from any checkout rather than
-# from one machine's dev tree.
-BASE = str(Path(__file__).resolve().parent.parent)
+BASE = "/home/amd/Documents/AI_Output/Dev/vibe-ed-dev"
 BACKEND = f"{BASE}/backend"
 sys.path.insert(0, BACKEND)
 
@@ -130,16 +128,26 @@ check(
     ex_context_window.fit_max_tokens(262144, 262144, 131072, answer_room=16384) == 0,
 )
 
+trimmed_only = ex_context_window.trim_tool_output(messages, keep_tool_turns=SETTINGS["keepToolTurns"])
 shaped, report = ex_wiring.prompt_gate(tmp, "chat1", messages, SETTINGS, "user1", 131072)
 check(
-    "4 stale tool output is stubbed and the request lands under the trim target",
-    report.get("trimmed") and report.get("tokens_after_trim") <= int(report["budget"] * SETTINGS["trimTargetRatio"]),
+    "4 stale tool output is stubbed and the count falls",
+    report.get("trimmed") and report.get("tokens_after_trim") < report["measured_before"],
     f"report={ {k: report.get(k) for k in ('measured_before','tokens_after_trim','budget')} }",
 )
+# Trimming alone cannot always reach the target: the newest keep_tool_turns bodies stay intact by
+# rule, and here those bodies are larger than the target by themselves. That is exactly the case the
+# shed exists for, so the assertion is about what trimming can and cannot do.
 check(
-    "4b trimming never rewrites conversation text",
-    any(m.get("role") == "assistant" and str(m.get("content")) == "reply 0" for m in shaped),
-    "first assistant reply is missing from the shaped list",
+    "4b trimming alone cannot reach the target here, so the shed carries the request",
+    report.get("tokens_after_trim") > int(report["budget"] * SETTINGS["trimTargetRatio"])
+    and report.get("shed") and report.get("trigger"),
+    f"report={ {k: report.get(k) for k in ('tokens_after_trim','shed','trigger')} }",
+)
+check(
+    "4c trimming never rewrites conversation text",
+    any(m.get("role") == "assistant" and str(m.get("content")) == "reply 0" for m in trimmed_only),
+    "first assistant reply is missing from the trimmed list",
 )
 trimmed_only = ex_context_window.trim_tool_output(messages, keep_tool_turns=SETTINGS["keepToolTurns"])
 check(
@@ -348,6 +356,27 @@ check(
     "23 the gate plans for the engine's window, not the configured one",
     gate9.get("ceiling") == 131072 and gate9.get("window_capped_by_engine"),
     f"gate={ {k: gate9.get(k) for k in ('ceiling','configured','window_capped_by_engine')} }",
+)
+
+# The answer room scales as a ratio. A request for the whole engine output cap on a big window used to
+# reserve half the window for the answer, which is context taken away from the chat for nothing.
+reserve_big = ex_context_window.proportional_reserve(262144, preferred=SETTINGS["replyReserve"], max_tokens=131072)
+check(
+    "24 the answer room is a ratio, not the whole requested cap",
+    reserve_big == int(262144 * ex_context_window.RESERVE_MAX_RATIO),
+    f"reserve={reserve_big}",
+)
+_, gate10 = ex_wiring.prompt_gate(small_dir, "chat10", [{"id": "b1", "role": "user", "content": "short"}], SETTINGS, "user1", 131072)
+check(
+    "25 the budget on a 128k engine leaves room for context, not just for the answer",
+    gate10.get("budget") == 131072 - int(131072 * ex_context_window.RESERVE_MAX_RATIO),
+    f"budget={gate10.get('budget')}",
+)
+check(
+    "26 a small window does not reserve half of itself either",
+    ex_context_window.proportional_reserve(32768, preferred=SETTINGS["replyReserve"], max_tokens=131072)
+    == int(32768 * ex_context_window.RESERVE_MAX_RATIO),
+    f"reserve={ex_context_window.proportional_reserve(32768, preferred=SETTINGS['replyReserve'], max_tokens=131072)}",
 )
 
 print(f"\n{passed} passed, {failed} failed")

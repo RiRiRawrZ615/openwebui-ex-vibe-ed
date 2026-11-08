@@ -335,8 +335,10 @@ def proportional_reserve(
     answer is a ratio of the window clamped between a sane floor and a hard ceiling, then
     raised if the caller actually asked for more output than that.
 
-    At 262144 this lands on 16384, which matches the old constant, so large windows behave
-    exactly as before. At 32768 it lands on 2621 instead of 16384, which is the whole point.
+    At 262144 with the default preference this lands on 16384, which matches the old constant, so
+    large windows behave exactly as before. At 32768 it lands on 2621 instead of 16384, which is the
+    whole point. A requested output cap larger than the ratio ceiling does not raise the reserve past
+    the ceiling, because that reserve would be taken from the prompt rather than from the answer.
     """
     try:
         stated = int(preferred) if preferred is not None else 0
@@ -353,11 +355,17 @@ def proportional_reserve(
     floor = min(int(window * RESERVE_MIN_RATIO), ceiling)
     floor = max(RESERVE_FLOOR_TOKENS, floor)
 
+    # A large requested output cap is not a promise the reply will be that long. Reserving the whole
+    # request turns a 262144 window into a 131072 prompt budget, which is the opposite of keeping as
+    # much context as possible. The reserve follows the preference and the ratio; the cap itself is
+    # fitted afterwards by fit_max_tokens, which is the engine's rule, so a request for 131072 on a
+    # 262144 window costs 20 percent of the window and not half of it.
+    demand = min(requested, ceiling) if requested > 0 else 0
     reserve = stated if stated > 0 else DEFAULT_REPLY_RESERVE
     reserve = min(reserve, ceiling)
-    reserve = max(reserve, floor, requested)
-    # A caller demanding more output than 40 percent of the window is asking for something the
-    # window cannot give. Clamp it rather than hand back a zero budget.
+    reserve = max(reserve, floor, demand)
+    # A caller demanding more output than half the window is asking for something the window cannot
+    # give. Clamp it rather than hand back a zero budget.
     return max(0, min(reserve, int(window * 0.5)))
 
 

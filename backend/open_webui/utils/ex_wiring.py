@@ -477,6 +477,7 @@ def prompt_gate(
     settings: dict,
     user_id: str = "",
     max_tokens: Any = None,
+    tool_schema_tokens: Any = None,
 ) -> tuple[list[dict], dict]:
     """The measurement point that cannot be fooled.
 
@@ -519,7 +520,17 @@ def prompt_gate(
         max_tokens=max_tokens,
     )
     budget = max(1, ceiling - reserve)
-    allowance = max(0, int(settings.get("toolSchemaTokens") or DEFAULT_TOOL_SCHEMA_TOKENS))
+    # The caller can hand over the measured tool block. When it cannot, the settings allowance is a
+    # floor rather than a measurement: for a normal chat request the tools are attached after this
+    # point, so the real block size is not knowable here. Counting it as a floor is the honest version
+    # of that, and a machine with a larger builtin set can raise the floor.
+    try:
+        measured = int(tool_schema_tokens or 0)
+    except (TypeError, ValueError):
+        measured = 0
+    allowance = measured if measured > 0 else max(
+        0, int(settings.get("toolSchemaTokens") or DEFAULT_TOOL_SCHEMA_TOKENS)
+    )
     ratio = float(settings.get("rolloverThreshold") or 0.7)
     keep_ratio = float(settings.get("rolloverShedKeepRatio") or 0.7)
     keep_tool_turns = int(settings.get("keepToolTurns") or DEFAULT_KEEP_TOOL_TURNS)
@@ -529,6 +540,7 @@ def prompt_gate(
     report["configured"] = int(configured) if configured else None
     report["budget"] = budget
     report["tool_schema_tokens"] = allowance
+    report["tool_schema_source"] = "measured" if measured > 0 else "allowance"
     report["measured_before"] = before
     report["trigger"] = threshold_crossed(before, budget, ratio)
     report["trimmed"] = False
