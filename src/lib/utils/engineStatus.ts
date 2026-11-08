@@ -64,12 +64,23 @@ export function engineChips(value: EngineStatusResponse | null, settings: Record
 	// counters on the row, so it shows only when the row is set to engine or both. The other one is the
 	// front-end arrival count in exStats.ts, and the two are not the same measurement.
 	const source = settings?.statsTokenSource ?? 'both';
-	if ((source === 'engine' || source === 'both') && status.tokens !== undefined && value.ceiling?.value) {
-		chips.push({
-			label: 'ctx',
-			value: `${status.tokens.toLocaleString('en-US')}/${value.ceiling.value.toLocaleString('en-US')}`,
-			title: `Engine's own token count against its configured window (${value.ceiling.source}). Not the generation budget, and not the front-end estimate`
-		});
+	if (source === 'engine' || source === 'both') {
+		const fill = value.fill;
+		if (fill?.fill && fill.window) {
+			// The window fill, which only grows across a chat. That is what makes it a window
+			// measurement rather than a turn measurement.
+			chips.push({
+				label: 'ctx',
+				value: `${fill.fill.toLocaleString('en-US')}/${fill.window.toLocaleString('en-US')}`,
+				title: `Window fill, source ${fill.source}. 'engine' is the size of the request the engine read; 'carried' is the last request size plus this turn's output; 'estimate' is the message list only. Not the generation budget`
+			});
+		} else if (status.tokens !== undefined && value.ceiling?.value) {
+			chips.push({
+				label: 'ctx',
+				value: `${status.tokens.toLocaleString('en-US')}/${value.ceiling.value.toLocaleString('en-US')}`,
+				title: `Tokens produced in this turn against the engine's configured window (${value.ceiling.source}). No request size has been read yet, so this is not the window fill`
+			});
+		}
 	}
 
 	if (settings?.engineStatusEta && value?.eta?.seconds) {

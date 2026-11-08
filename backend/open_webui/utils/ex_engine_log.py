@@ -97,10 +97,17 @@ def parse_line(line: str) -> dict | None:
     if tokens is None and budget is None and speed is None:
         return None
 
+    # On a prefill line the number is the size of the request the engine is reading, which is the
+    # only figure that says how full the window is. On a thinking or answering line the same number
+    # means tokens produced in this turn. Both were landing in the same field, so the row showed a
+    # per-turn count as if it were the window fill and the fraction moved in the wrong direction.
+    prompt_tokens = tokens if phase == "reading the prompt" else None
+
     return {
         "phase": phase,
         "tool": tool,
         "tokens": tokens,
+        "prompt_tokens": prompt_tokens,
         "budget": budget,
         "speed": speed,
         "no_speed": no_speed,
@@ -141,6 +148,16 @@ def read_status(path: Path | str, max_lines: int = DEFAULT_LINES, max_age: int =
         if running and last_done:
             break
 
+    # The last request size the engine reported. A turn that is still generating has no request size
+    # of its own, so the window fill has to come from the most recent prefill reading plus what this
+    # turn has produced. Without this the row falls back to a per-turn count and reads as though the
+    # window emptied at the start of every turn.
+    last_prefill = None
+    for record in reversed(records):
+        if record.get("prompt_tokens"):
+            last_prefill = record
+            break
+
     age = None
     try:
         age = max(0, int(time.time() - log_path.stat().st_mtime))
@@ -149,6 +166,7 @@ def read_status(path: Path | str, max_lines: int = DEFAULT_LINES, max_age: int =
 
     return {
         "source": "engine log",
+        "last_prefill": last_prefill,
         "path": str(log_path),
         "live": age is not None and age <= int(max_age or 30),
         "age_seconds": age,
@@ -192,6 +210,12 @@ def resolve_log_path(settings: dict, data_dir: str = "") -> Path:
     configured = str(settings.get("engineLogPath") or "").strip()
     if configured:
         return Path(os.path.expanduser(configured))
+    # The instance's own state dir, passed by the launcher. Without this the dev instance reads the
+    # log of whichever instance wrote to the shared state dir, and the figures shown in the dev row
+    # are that instance's turn, not the one being looked at.
+    env_path = str(os.environ.get("OWV_ENGINE_LOG") or "").strip()
+    if env_path:
+        return Path(os.path.expanduser(env_path))
     if data_dir:
         state = Path(os.environ.get("XDG_STATE_HOME") or (Path(data_dir).parent if data_dir else Path.home()))
         candidate = state / "openwebvibes" / "engine.log"
