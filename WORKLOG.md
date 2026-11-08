@@ -759,3 +759,37 @@ The launchers and aliases are not in a git repo, so the launcher half is disk-on
 by `test_owv_dev_launcher.py` (48 checks, all pass), including that the dev instance starts no
 terminal of its own, keeps its logs inside its own state dir, and writes nothing into the live
 data directory.
+
+## 2026-11-08, the ctx chip showed a per-turn count as the window fill, and the dev instance read the wrong log
+
+### Verified
+
+The engine log carries a token count on every phase line, but that number means two different things.
+On a `reading the prompt` line it is the size of the request the engine is reading, which is the only
+figure that says how full the window is. On a thinking or answering line it is what this turn produced.
+Both landed in the same field, so the row displayed a per-turn count as the window fill and the fraction
+moved in the wrong direction at the start of every turn.
+
+`ex_engine_log.py` now keeps the two apart: `prompt_tokens` is set only on a prefill line, and the reader
+returns `last_prefill` so a turn that is still generating can be measured as the last request size plus
+what this turn produced. `engineStatus.ts` shows the window fill from `window_fill` in `exStats.ts`, and
+falls back to the per-turn count only when no request size has been read. The chip title names its source
+(`engine`, `carried`, or `estimate`) so the two readings cannot be mistaken for each other.
+
+The log path resolved to the shared state dir, so a dev instance running beside a live one read whichever
+instance wrote last and displayed that instance's turn. `OWV_ENGINE_LOG` now takes precedence, and the dev
+launcher already exports it (`ai-launchers/owv-dev.sh:268`).
+
+### Settings panel
+
+The ex tabs looked broken because the panel clipped its content: the scrollbar rule styles a thumb, it does
+not create a scroll container, so a tab with no inner scroller had nothing to grab. The panel is the scroll
+container now. The Help tab button was missing from the nav row even though the panel existed; the button
+and `QuestionMarkCircle` are in the nav.
+
+### Checks
+
+`svelte-check` on the dev tree reports 5806 errors in 341 files, none of them in an ex file, so that number
+is the upstream baseline and not this work. `test_ex_gate.py` is 41 checks, all pass, including mirror parity
+for the eight gate keys and the dimmed/lit chip. The frontend build completes clean (6816 modules, 1m44s), so
+the build that crashed earlier is not reproducible on this tree.
