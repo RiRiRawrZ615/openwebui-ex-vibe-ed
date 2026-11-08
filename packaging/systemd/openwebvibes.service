@@ -1,0 +1,15 @@
+[Unit]
+Description=Open Web Vibes (Open WebUI fork) with the context gate
+After=network-online.target
+
+[Service]
+Type=simple
+# The launcher re-execs inside tmux, so the service supervises the outer process and tmux keeps the
+# session. Running the launcher directly from a shell is the other supported path; the package does
+# not run the fork as root.
+ExecStart=/usr/lib/openwebvibes/launcher/owv-packaged.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
