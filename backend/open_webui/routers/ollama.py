@@ -1666,7 +1666,9 @@ async def download_model(
     user=Depends(get_admin_user),
 ):
     """Download a GGUF model from HuggingFace or GitHub and register it with Ollama."""
-    allowed_hosts = ['https://huggingface.co/', 'https://github.com/']
+    allowed_hosts = ['https://huggingface.co/']
+    if os.environ.get('OWV_NO_GITHUB_FETCH') != '1':
+        allowed_hosts.append('https://github.com/')
     if not any(form_data.url.startswith(host) for host in allowed_hosts):
         raise HTTPException(
             status_code=400,

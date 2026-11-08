@@ -742,3 +742,20 @@ fixing only the generated file would be lost on the next regeneration. The snaps
 
 ### Harness
 `test_ex_tools.py`, 29 checks, 5 added for the manifest rule and the extract resolution.
+
+## 2026-11-07, offline instance: two runtime paths could still reach GitHub
+
+The dev instance is meant to be offline, and the launcher sets the guard, but two code paths did
+fetch anyway when handed a GitHub source:
+
+- a skill import from a GitHub URL pulled a tarball from codeload;
+- the model download allowlist accepted `github.com`.
+
+Under `OWV_NO_GITHUB_FETCH=1` both refuse instead. The second half of the guarantee is in the
+launcher: a dev copy carrying a `.git` is refused, because a checkout can fetch a remote, and the
+dev build uses the wheels already cached in `static/pyodide` instead of running `pyodide:fetch`.
+
+The launchers and aliases are not in a git repo, so the launcher half is disk-only. It is covered
+by `test_owv_dev_launcher.py` (48 checks, all pass), including that the dev instance starts no
+terminal of its own, keeps its logs inside its own state dir, and writes nothing into the live
+data directory.

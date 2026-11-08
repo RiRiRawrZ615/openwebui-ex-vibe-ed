@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import re
 import stat
 import time
@@ -453,6 +454,10 @@ def skill_import_source(url: str) -> tuple[str, str | None]:
         raise ValueError('Use an HTTP(S) URL without embedded credentials')
     if parsed.hostname.lower() != 'github.com':
         return url.strip(), None
+    if os.environ.get('OWV_NO_GITHUB_FETCH') == '1':
+        # Dev instance guard: a GitHub skill import is a fetch, and the dev instance is
+        # not allowed to reach the network. Refuse rather than quietly download.
+        raise ValueError('GitHub skill import is disabled on this instance (OWV_NO_GITHUB_FETCH=1).')
     parts = parsed.path.strip('/').split('/')
     if len(parts) < 2 or any(not re.fullmatch(r'[\w.-]+', part) or part in ('.', '..') for part in parts[:2]):
         raise ValueError('Invalid GitHub repository URL')
