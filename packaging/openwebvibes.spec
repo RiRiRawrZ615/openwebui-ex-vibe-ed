@@ -3,6 +3,7 @@ Version:        1.1.0
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
+Source0:        openwebvibes.tar.gz
 BuildArch:      noarch
 
 Requires:       bash
@@ -61,6 +62,16 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Sat Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.0-1.rc1
+- Stats row: the ctx chip reports the window fill (request size, or last request size plus this
+  turn), not a per-turn count. The chip names its source.
+- Engine log: prefill and generation numbers are kept apart, so the fraction grows in the right
+  direction across a chat.
+- Dev instance reads its own engine log through OWV_ENGINE_LOG instead of the shared state dir.
+- Settings panel: the panel is the scroll container, and the Help tab has its nav button.
+- Packaging: Source0 added (rpmbuild could not find the source), the source archive no longer
+  contains itself, and *.spec no longer hides the spec from git.
+
 * Fri Nov 07 2026 Qwen 3.8 <qwen@localhost> - 1.0.0-1.rc1
 - Context gate: measure after tool results are materialized, trim stale tool output, force-evict at
   the rollover point, fit the output cap to the room left, refuse locally before the engine does.
