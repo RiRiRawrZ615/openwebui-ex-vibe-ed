@@ -40,6 +40,7 @@
 	import UserCircle from '../icons/UserCircle.svelte';
 	import SoundHigh from '../icons/SoundHigh.svelte';
 	import InfoCircle from '../icons/InfoCircle.svelte';
+	import QuestionMarkCircle from '../icons/QuestionMarkCircle.svelte';
 	import WrenchAlt from '../icons/WrenchAlt.svelte';
 	import Face from '../icons/Face.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
@@ -782,6 +783,19 @@
 								<Sparkles className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.vibes.title')}</span>
 							</button>
+						{:else if tabId === 'help'}
+							<button
+								role="tab"
+								aria-controls="tab-help"
+								aria-selected={selectedTab === 'help'}
+								class={tabButtonClass(selectedTab === 'help')}
+								on:click={() => {
+									selectTab('help');
+								}}
+								>
+								<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+								<span>{$i18n.t('settings.personal.help.title')}</span>
+							</button>
 						{:else if tabId === 'setup'}
 							<button
 								role="tab"
@@ -935,8 +949,12 @@
 	</nav>
 
 	<div class="flex-1 min-w-0 min-h-0 p-4 md:px-5 flex flex-col">
+		<!-- A panel that clips its content is what made the ex tabs look broken. The scrollbar rule
+			styles a thumb; it does not create a scroll container, so a tab with no inner scroller of
+			its own had nothing to grab. The panel is the container now. Tabs that already scroll
+			inside keep their own scroller. -->
 		<div
-			class="flex-1 min-h-0 overflow-hidden"
+			class="flex-1 min-h-0 overflow-y-auto owv-scroll"
 			id={isAdminTab(selectedTab) ? adminTabPanelId(selectedTab) : undefined}
 		>
 			{#if selectedTab === 'general'}
