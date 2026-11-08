@@ -91,7 +91,7 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import apply_summary_checkpoint, compact_messages_for_request
-from open_webui.utils.ex_context_window import detect_ceiling, shape_request
+from open_webui.utils.ex_context_window import DEFAULT_TOOL_SCHEMA_TOKENS, detect_ceiling, shape_request
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.models.tools import Tools as ToolStore
@@ -106,8 +106,8 @@ from open_webui.utils.ex_wiring import (
     read_previous_context,
     reasoning_on_demand,
     retrieve_chat_memory,
+    prompt_gate,
     retry_call,
-    rollover_check,
     rollover_index_block,
 )
 from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
@@ -2399,25 +2399,72 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         ex_block = '\n\n'.join(
             block['content'] for block in ex_context_blocks if block.get('content')
         )
-        shaped, ex_shape = shape_request(
+        # Materialize before measuring. Tool results live in the structured output and the prompt the
+        # engine counts includes them, so measuring the message list first is what let this chat read
+        # as 6076 estimated tokens while the engine counted 262306. The rollover point was crossed in
+        # the chat and never crossed in the measurement, so the trigger wrote nothing.
+        ex_materialized = process_messages_with_output(
             form_data.get('messages', []),
+            reasoning_format=get_reasoning_format(model),
+            include_file_context=metadata['include_file_context'],
+        )
+        ex_requested_max = (form_data.get('params') or {}).get('max_tokens')
+
+        shaped, ex_shape = shape_request(
+            ex_materialized,
             window=ex_window,
             reply_reserve=ex_settings.get('replyReserve') or 16384,
-            max_tokens=(form_data.get('params') or {}).get('max_tokens'),
+            max_tokens=ex_requested_max,
             keep_tool_turns=int(ex_settings.get('keepToolTurns') or 3),
             context_block=ex_block if ex_settings.get('tailInject', True) else None,
             data_dir=DATA_DIR,
+            tool_schema_tokens=int(ex_settings.get('toolSchemaTokens') or DEFAULT_TOOL_SCHEMA_TOKENS),
+            settings=ex_settings,
+        )
+        # The gate re-measures on the materialized list, trims stale tool output first, sheds the
+        # oldest sections when the honest count crosses the rollover point, and fits the output cap
+        # to the room the prompt leaves. Shedding writes the verbatim dump before anything leaves the
+        # prompt, so the copy on disk exists first.
+        shaped, ex_gate = prompt_gate(
+            DATA_DIR,
+            metadata.get('chat_id', ''),
+            shaped,
+            ex_settings,
+            getattr(user, 'id', '') or '',
+            ex_requested_max,
         )
         form_data['messages'] = shaped
-        metadata['exContextWindow'] = ex_shape
+        metadata['exContextWindow'] = {**ex_shape, 'gate': ex_gate}
 
-        # Rolling context trigger. The fraction is measured on the count before trimming, so the
-        # rollover point does not move depending on how much tool output happened to be stale. What is
-        # written is a pointer for the next chat; nothing here decides what the chat meant.
-        if ex_settings.get('rollover') and rollover_check(ex_shape, ex_settings):
+        # Crossing the rollover point now has to shrink the prompt, not only record where the next
+        # chat should look. The trigger reads the post-materialization count, so it cannot be fooled
+        # by tool output that has not been turned into messages yet.
+        if ex_settings.get('rollover') and ex_gate.get('trigger'):
             ex_carry = mark_rollover(DATA_DIR, metadata.get('chat_id', ''), getattr(user, 'id', '') or '')
             if ex_carry:
-                metadata['exRollover'] = ex_carry
+                metadata['exRollover'] = {**ex_carry, 'shed': bool(ex_gate.get('shed'))}
+
+        if ex_gate.get('max_tokens_fit') and ex_settings.get('fitMaxTokens', True):
+            form_data['params'] = {
+                **(form_data.get('params') or {}),
+                'max_tokens': int(ex_gate['max_tokens_fit']),
+            }
+
+        # The engine does not truncate, so a request that cannot fit is a hard failure. Refusing here
+        # says what happened in terms the user can act on, instead of returning a 400 from the engine
+        # in the middle of a turn.
+        if ex_gate.get('refused') and ex_settings.get('enforceCeiling', True):
+            raise HTTPException(
+                400,
+                detail=(
+                    f'ex context gate: {ex_gate.get("measured_after")} projected tokens against the '
+                    f'engine window of {ex_gate.get("ceiling")}, {ex_gate.get("over_by")} over. '
+                    'Nothing was truncated. The shed sections are on disk and can be pulled by id; '
+                    'lower max_tokens, shed this chat, or start a fresh one.'
+                ),
+            )
+    except HTTPException:
+        raise
     except Exception:
         log.exception('EX context window shaping failed; falling back to the unshaped request')
         for block in reversed(ex_context_blocks):
@@ -2428,11 +2475,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             except Exception:
                 pass
 
-    form_data['messages'] = process_messages_with_output(
-        form_data.get('messages', []),
-        reasoning_format=get_reasoning_format(model),
-        include_file_context=metadata['include_file_context'],
-    )
     form_data['messages'] = sanitize_tool_pairs(form_data['messages'])
     history_messages = [message for message in form_data['messages'] if message.get('role') != 'system']
 

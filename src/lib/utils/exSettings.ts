@@ -32,6 +32,10 @@ export type ExSettings = {
 	trimToolOutput: boolean;
 	keepToolTurns: number;
 	tailInject: boolean;
+	toolSchemaTokens: number;
+	trimTargetRatio: number;
+	fitMaxTokens: boolean;
+	enforceCeiling: boolean;
 	backend: string;
 	modelPath: string;
 	allowInstall: boolean;
@@ -47,6 +51,10 @@ export type ExSettings = {
 	rollover: boolean;
 	rolloverThreshold: number;
 	rolloverMaxChars: number;
+	rolloverShed: boolean;
+	rolloverShedKeepRatio: number;
+	shedFeedBackReasoning: boolean;
+	shedReasoningChars: number;
 	reasoningFiles: boolean;
 	reasoningOnDemand: boolean;
 	reasoningExcerptChars: number;
@@ -96,6 +104,10 @@ export const EX_DEFAULTS: ExSettings = {
 	trimToolOutput: true,
 	keepToolTurns: 3,
 	tailInject: true,
+	toolSchemaTokens: 4096,
+	trimTargetRatio: 0.85,
+	fitMaxTokens: true,
+	enforceCeiling: true,
 	backend: 'auto',
 	modelPath: '',
 	allowInstall: false,
@@ -111,6 +123,10 @@ export const EX_DEFAULTS: ExSettings = {
 	rollover: true,
 	rolloverThreshold: 0.7,
 	rolloverMaxChars: 60000,
+	rolloverShed: true,
+	rolloverShedKeepRatio: 0.7,
+	shedFeedBackReasoning: true,
+	shedReasoningChars: 2000,
 	reasoningFiles: true,
 	reasoningOnDemand: true,
 	reasoningExcerptChars: 160,

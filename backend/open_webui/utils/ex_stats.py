@@ -70,6 +70,49 @@ def live_estimates(streamed_text: str, window_tokens: int) -> dict:
     }
 
 
+def window_fill(status: dict | None, ceiling: int | None,
+                last_prefill: dict | None = None,
+                fallback_estimate: int | None = None) -> dict:
+    """How much of the engine's window the request occupies.
+
+    Three figures get confused here and the whole point of this function is that they are not the
+    same number:
+
+      the engine's request size (its prefill reading)  - the window fill, the only figure that
+        actually says how full the window is;
+      the per-turn generated count                     - what this turn produced, which starts at
+        zero on every turn and therefore cannot describe a window;
+      the frontend message estimate                    - the message list only, no system prompt and
+        no tool schemas, so it is an estimate and must be labelled as one.
+
+    The fill is taken from the engine when it has one, and only grows. When the turn is still
+    generating, the most recent request size is carried forward and this turn's output is added to
+    it. The estimate is used only when nothing else is known, and the source field says which one
+    was used so the row can label it.
+    """
+    fill = None
+    source = "none"
+
+    status = status or {}
+    generated = status.get("tokens") if status.get("phase") not in ("reading the prompt", None) else 0
+
+    if status.get("prompt_tokens"):
+        fill = int(status["prompt_tokens"]) + int(generated or 0)
+        source = "engine"
+    elif last_prefill and last_prefill.get("prompt_tokens"):
+        fill = int(last_prefill["prompt_tokens"]) + int(generated or 0)
+        source = "carried"
+    elif fallback_estimate:
+        fill = int(fallback_estimate)
+        source = "estimate"
+
+    window = int(ceiling) if ceiling else None
+    out = {"fill": fill, "source": source, "window": window}
+    if fill and window:
+        out["percent"] = round(100.0 * fill / window, 1)
+    return out
+
+
 def generation_stats(usage: dict | None) -> dict:
     """Compact stats for display. Fields omitted when the provider did not report them."""
     usage = usage or {}
@@ -161,3 +204,32 @@ def format_stats_line(stats: dict, approximate: bool = False) -> str:
     if stats.get("wall_seconds"):
         parts.append(f"{stats['wall_seconds']}s")
     return " · ".join(parts)
+
+
+def context_chips(state: dict | None) -> list[dict]:
+    """The context rollover indicator for the stats row.
+
+    One entry, always present when the rollover is on. A chip that only appears after the first
+    eviction reads as an error rather than as a state, so the row needs the dimmed form too.
+
+    `active` is what the component uses to choose dimmed or lit: nothing shed yet is dimmed, a shed
+    that has happened is lit. `count` is the number of sheds for this chat and is drawn in the top
+    right of the icon. The count comes from the per-chat state file written by ex_rollover when a
+    shed happens, so it is a real count of sheds and not an estimate.
+    """
+    state = state or {}
+    rolls = int(state.get("rolls") or 0)
+    return [
+        {
+            "label": "C",
+            "value": str(rolls),
+            "count": rolls,
+            "active": rolls > 0,
+            "title": (
+                f"{rolls} context sheds for this chat"
+                if rolls
+                else "no context shed yet for this chat"
+            ),
+            "phase": "rollover",
+        }
+    ]

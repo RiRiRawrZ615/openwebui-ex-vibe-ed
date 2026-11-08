@@ -173,6 +173,50 @@ export class ArrivalRate {
 // so anything shown before that is an estimate and must be labelled as one.
 // window_tokens is the message-list estimate (no system prompt here), so it is
 // labelled as message-only by the caller.
+/**
+ * Window fill. Mirror of window_fill in backend/open_webui/utils/ex_stats.py; same rules, same key
+ * names. The three figures stay three figures: the engine's request size is the window, the per-turn
+ * count is not, and the message-list estimate is only an estimate.
+ */
+export type WindowFill = {
+	fill: number | null;
+	source: string;
+	window: number | null;
+	percent?: number;
+};
+
+export function windowFill(
+	status: Record<string, any> | null,
+	ceiling: number | null,
+	lastPrefill?: Record<string, any> | null,
+	fallbackEstimate?: number | null
+): WindowFill {
+	let fill: number | null = null;
+	let source = 'none';
+	const s = status ?? {};
+	const generated = s.phase && s.phase !== 'reading the prompt' ? num(s.tokens) ?? 0 : 0;
+
+	const prompt = num(s.prompt_tokens);
+	if (prompt) {
+		fill = Math.round(prompt + generated);
+		source = 'engine';
+	} else {
+		const carried = num(lastPrefill?.prompt_tokens);
+		if (carried) {
+			fill = Math.round(carried + generated);
+			source = 'carried';
+		} else if (fallbackEstimate) {
+			fill = Math.round(fallbackEstimate);
+			source = 'estimate';
+		}
+	}
+
+	const window = ceiling ? Math.round(ceiling) : null;
+	const out: WindowFill = { fill, source, window };
+	if (fill && window) out.percent = Math.round((100 * fill) / window * 10) / 10;
+	return out;
+}
+
 export function liveStats(
 	content: string,
 	elapsedSeconds: number,
@@ -296,4 +340,35 @@ export function statChips(
 		});
 
 	return chips;
+}export type RolloverState = {
+	rolls: number;
+	last_shed_at?: number;
+	last_shed_tokens?: number;
+	last_kept_tokens?: number;
+};
+
+export type ContextChip = {
+	label: string;
+	value: string;
+	count: number;
+	active: boolean;
+	title: string;
+	phase: string;
+};
+
+export function contextChips(state: RolloverState | null): ContextChip[] {
+	// Mirror of context_chips in backend/open_webui/utils/ex_stats.py. The chip is always present so
+	// the row can show the dimmed form: a marker that only appears after the first eviction reads as
+	// an event that happened, not as a state that is switched on.
+	const rolls = Number(state?.rolls ?? 0);
+	return [
+		{
+			label: 'C',
+			value: String(rolls),
+			count: rolls,
+			active: rolls > 0,
+			title: rolls ? `${rolls} context sheds for this chat` : 'no context shed yet for this chat',
+			phase: 'rollover'
+		}
+	];
 }

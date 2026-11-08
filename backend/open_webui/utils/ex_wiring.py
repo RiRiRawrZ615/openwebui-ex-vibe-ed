@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from open_webui.utils.ex_journal import (
     append_journal,
@@ -37,7 +38,7 @@ from open_webui.utils.ex_context import parse_export, previous_context_block, pr
 from open_webui.utils.ex_recovery import decide, retry_permitted
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
-from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats
+from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats, window_fill
 from open_webui.utils.ex_rag import ChatMemory, should_retrieve
 from open_webui.utils.ex_engine_log import (
     eta as engine_eta,
@@ -55,8 +56,22 @@ from open_webui.utils.ex_rollover import (
     read_index,
     read_reasoning,
     resolve_source,
+    shed_for_prompt,
     store_chat,
     threshold_crossed,
+)
+from open_webui.utils.ex_context_window import (
+    ANSWER_ROOM_MIN,
+    DEFAULT_KEEP_TOOL_TURNS,
+    DEFAULT_TOOL_SCHEMA_TOKENS,
+    TRIM_TARGET_RATIO,
+    fit_max_tokens,
+    inject_at_tail,
+    message_tokens,
+    projected_tokens,
+    proportional_reserve,
+    resolve_window,
+    trim_to_budget,
 )
 from open_webui.utils.ex_steering import load_queue, mark_applied, normalize_chat_id, plan as steering_plan
 
@@ -202,6 +217,14 @@ def engine_status(settings: dict, data_dir: Path | str = "") -> dict:
             status["ceiling"] = {"value": value, "source": source}
         except Exception:
             status["ceiling"] = None
+        # The window fill is reported as its own figure, with the source, so the row cannot show a
+        # per-turn count as if it were the window. The ceiling here is the engine's configured window
+        # from the handshake; the number on a generation line is not comparable to it.
+        status["fill"] = window_fill(
+            status.get("status"),
+            (status.get("ceiling") or {}).get("value"),
+            status.get("last_prefill"),
+        )
         return status
     except Exception:
         log.exception("EX engine status read failed")
@@ -445,3 +468,130 @@ __all__ = [
     "chat_memory_status",
     "forget_chat_memory",
 ]
+
+
+def prompt_gate(
+    data_dir: Path | str,
+    chat_id: str,
+    messages: list[dict],
+    settings: dict,
+    user_id: str = "",
+    max_tokens: Any = None,
+) -> tuple[list[dict], dict]:
+    """The measurement point that cannot be fooled.
+
+    Two things were wrong with the old pass.
+
+    1. It measured the message list before the tool bodies were materialized. Tool results live in
+       the structured output, and `process_messages_with_output` turns them into tool messages after
+       the shaping pass had already decided the list fit. On the failing chat that read as 6076
+       estimated tokens against an engine count of 262306.
+    2. Crossing the rollover point only wrote a carry pointer for the next chat. It never made the
+       current chat smaller, so a chat kept growing until the engine refused it, and the engine does
+       not truncate.
+
+    Order here is the fix: measure the materialized list, trim stale tool output first because it is
+      the largest and least load bearing part of an agentic transcript, shed the oldest sections only
+      when the honest count crosses the rollover point, put the shed index at the tail so the cached
+      prefix survives, then fit the output cap to the room left. If nothing can be made to fit, the
+      request is refused here with a readable reason rather than as an engine error mid turn.
+
+    Returns the shaped list and a report. The input list is not mutated.
+    """
+    messages = list(messages or [])
+    settings = settings or {}
+
+    # Never plan for more room than the engine has. A configured window larger than the handshake
+    # turns a request that should have been shed into a request the engine refuses, which is how a
+    # 128k machine gets context death while the settings say 262144. The handshake is the smaller of
+    # the two, so it wins.
+    configured = settings.get("contextWindow") or None
+    detected = resolve_window(None, data_dir)
+    ceiling = int(configured) if configured else detected
+    report = {}
+    report["window_capped_by_engine"] = bool(configured and detected and int(configured) > detected)
+    if report["window_capped_by_engine"]:
+        ceiling = detected
+
+    reserve = proportional_reserve(
+        ceiling,
+        preferred=settings.get("replyReserve"),
+        max_tokens=max_tokens,
+    )
+    budget = max(1, ceiling - reserve)
+    allowance = max(0, int(settings.get("toolSchemaTokens") or DEFAULT_TOOL_SCHEMA_TOKENS))
+    ratio = float(settings.get("rolloverThreshold") or 0.7)
+    keep_ratio = float(settings.get("rolloverShedKeepRatio") or 0.7)
+    keep_tool_turns = int(settings.get("keepToolTurns") or DEFAULT_KEEP_TOOL_TURNS)
+
+    before = projected_tokens(messages, allowance)
+    report["ceiling"] = ceiling
+    report["configured"] = int(configured) if configured else None
+    report["budget"] = budget
+    report["tool_schema_tokens"] = allowance
+    report["measured_before"] = before
+    report["trigger"] = threshold_crossed(before, budget, ratio)
+    report["trimmed"] = False
+    report["shed"] = False
+    report["max_tokens_fit"] = 0
+    report["refused"] = False
+
+    if not settings.get("enabled"):
+        return messages, report
+
+    # 1. Tool output first. Lossless for conversation text, and this is the part that usually
+    #    brings a chat back under the window without shedding anything.
+    target = int(budget * float(settings.get("trimTargetRatio") or TRIM_TARGET_RATIO))
+    shaped = trim_to_budget(messages, target, keep_tool_turns=keep_tool_turns)
+    report["trimmed"] = projected_tokens(shaped, allowance) != before
+    report["tokens_after_trim"] = projected_tokens(shaped, allowance)
+
+    # 2. Shed only when the honest count crosses the rollover point. The dump is written before
+    #    anything leaves the prompt, so the copy on disk exists first.
+    shed_target = max(1, int(budget * keep_ratio))
+    if settings.get("rollover") and settings.get("rolloverShed") and report["trigger"]:
+        kept, shed_report = shed_for_prompt(
+            str(data_dir), chat_id, shaped, settings, shed_target, user_id, message_tokens
+        )
+        report["shed_report"] = shed_report
+        report["shed"] = bool(shed_report.get("shed"))
+        if report["shed"]:
+            shaped = kept
+            report["tokens_after_shed"] = projected_tokens(shaped, allowance)
+
+            # Forced eviction only works if the evicted text is still reachable. The dump keeps it
+            # verbatim on disk; the vector store is what makes it findable by meaning instead of by
+            # id alone. Indexing here is what turns a shed from a deletion into a move.
+            if should_retrieve(settings):
+                report["memory_indexed"] = index_chat_memory(
+                    data_dir, chat_id, shed_report.get("shed_messages") or [], settings
+                )
+
+            if shed_report.get("index_block"):
+                shaped, injection = inject_at_tail(shaped, shed_report["index_block"])
+                report["shed_injection"] = injection
+                report["tokens_after_shed"] = projected_tokens(shaped, allowance)
+
+    projected = projected_tokens(shaped, allowance)
+    report["measured_after"] = projected
+
+    # 3. Fit the output cap to the room left, which is the engine's own rule. Doing it here means
+    #    the request that goes out already satisfies the engine.
+    fit = fit_max_tokens(ceiling, projected, max_tokens, answer_room=reserve)
+    report["max_tokens_fit"] = fit
+
+    # 4. If the projection still cannot fit, stop before the engine does. An over-window request is
+    #    a hard failure, and a local refusal says what happened in terms the user can act on.
+    if settings.get("enforceCeiling", True) and projected + max(fit, ANSWER_ROOM_MIN) > ceiling:
+        report["refused"] = True
+        report["over_by"] = projected + max(fit, ANSWER_ROOM_MIN) - ceiling
+        log.warning(
+            "EX request refused before send: %d projected tokens against a %d window, %d over. "
+            "Trimming and shedding cannot fix a transcript that grew past the window; a shed or a "
+            "fresh chat can.",
+            projected,
+            ceiling,
+            report["over_by"],
+        )
+
+    return shaped, report

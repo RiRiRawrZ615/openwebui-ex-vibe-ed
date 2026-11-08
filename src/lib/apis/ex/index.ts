@@ -112,6 +112,8 @@ export type EngineStatusLine = {
 	phase: string;
 	tool?: string;
 	tokens?: number;
+	// Present only on a prefill line: the size of the request the engine is reading.
+	prompt_tokens?: number;
 	budget?: number;
 	speed?: number;
 	no_speed?: boolean;
@@ -126,8 +128,12 @@ export type EngineStatusResponse = {
 	age_seconds?: number | null;
 	status?: EngineStatusLine | null;
 	last_done?: EngineStatusLine | null;
+	// The most recent prefill reading, which is the request size and therefore the window fill. A
+	// generation line's number is this turn's output and cannot be read as the window.
+	last_prefill?: EngineStatusLine | null;
 	lines_read?: number;
 	ceiling?: { value: number; source: string } | null;
+	fill?: { fill: number | null; source: string; window: number | null; percent?: number } | null;
 	eta?: { remaining_tokens: number; seconds: number; based_on: string } | null;
 	error?: string;
 };
@@ -475,3 +481,18 @@ export const revertExBuiltinOverlay = async (
 	slug: string
 ): Promise<ExBuiltin | { error: string }> =>
 	jsonRequest(`/ex/builtins/${encodeURIComponent(slug)}/overlay`, token, 'DELETE');
+
+export type ExRolloverResponse = {
+	chat_id: string;
+	file: string;
+	state: { rolls?: number; last_shed_at?: number; last_shed_tokens?: number; last_kept_tokens?: number };
+};
+
+export async function getExRollover(chatId: string, token: string): Promise<ExRolloverResponse | null> {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/ex/rollover?chat_id=${encodeURIComponent(chatId)}`, {
+		headers: { Accept: 'application/json', authorization: `Bearer ${token}` }
+	})
+		.then((res) => res.json())
+		.catch((error) => null);
+	return res && !res.error ? res : null;
+}

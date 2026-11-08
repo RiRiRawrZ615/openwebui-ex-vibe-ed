@@ -439,3 +439,269 @@ def threshold_crossed(tokens_before: int, budget: int, ratio: float) -> bool:
     if budget <= 0 or ratio <= 0:
         return False
     return (tokens_before / budget) >= ratio
+
+
+# --------------------------------------------------------------------------------------
+# shedding: the rollover has to shrink the prompt, not only point at the next chat
+# --------------------------------------------------------------------------------------
+
+
+# Kept as a local copy so this module stays import-free. Same rule as
+# ex_context_window estimate_tokens, which is calibrated at 3.4 characters per token for this
+# tokenizer.
+CHARS_PER_TOKEN = 3.4
+
+
+def estimate_tokens(text: Any, chars_per_token: float = CHARS_PER_TOKEN) -> int:
+    if not text:
+        return 0
+    if not isinstance(text, str):
+        text = str(text)
+    ratio = max(1.0, float(chars_per_token or CHARS_PER_TOKEN))
+    return max(1, int(len(text) / ratio) + 1)
+
+
+def shed_boundary(
+    messages: list[dict],
+    target_tokens: int,
+    token_counter: Any = None,
+    protect_tail: int = 4,
+) -> int:
+    """Index that keeps the newest tail inside target_tokens.
+
+    Walks from the end and stops when the tail is small enough, then snaps back off any tool
+    exchange: a tool call whose result was shed is an invalid message list, and a chat template
+    rejects that outright. The tail is protected because those are the turns being discussed.
+    """
+    messages = list(messages or [])
+    if not messages:
+        return 0
+    counter = token_counter or (lambda m: estimate_tokens(str(m.get("content") or "")) + 4)
+    target = max(0, int(target_tokens or 0))
+
+    running = 0
+    boundary = len(messages)
+    for index in range(len(messages) - 1, -1, -1):
+        running += counter(messages[index])
+        if running > target:
+            boundary = index + 1
+            break
+    else:
+        return 0
+
+    # Do not split a tool call from its result, and do not shed into the protected tail.
+    while boundary > 0 and boundary < len(messages):
+        previous = messages[boundary - 1]
+        current = messages[boundary]
+        if isinstance(previous, dict) and previous.get("tool_calls"):
+            boundary -= 1
+            continue
+        if isinstance(current, dict) and current.get("tool_call_id"):
+            boundary -= 1
+            continue
+        break
+    return max(0, min(boundary, len(messages) - max(0, int(protect_tail))))
+
+
+def last_reasoning_block(data_dir: str, chat_id: str, settings: dict) -> str:
+    """The most recent reasoning block, verbatim.
+
+    This is the part of the evicted context that has to come back into the prompt. Everything else
+    can be pulled by id on demand, but the last turn's reasoning is what the next turn is actually
+    continuing from: without it the model has an address and no thought. It is read from the file the
+    index already stores, not reconstructed, so what comes back is what was written.
+    """
+    rows = read_index(data_dir, chat_id)
+    if not rows:
+        return ""
+    newest = None
+    for row in reversed(rows):
+        if row.get("reasoning_file"):
+            newest = row
+            break
+    if not newest:
+        return ""
+
+    root = chat_dir(data_dir, chat_id)
+    path = root / str(newest.get("reasoning_file") or "")
+    try:
+        if not path.exists():
+            return ""
+        body = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    cap = max(200, int(settings.get("shedReasoningChars") or 2000))
+    sid = str(newest.get("section_id") or "")
+    if len(body) > cap:
+        body = body[:cap] + "\n[truncated at the cap; the full block is on disk at this id]"
+    return f"[last reasoning turn {sid} of {chat_id}]\n{body}"
+
+
+def shed_index_block(
+    data_dir: str,
+    chat_id: str,
+    settings: dict,
+    shed_messages: list[dict],
+    file_path: str,
+) -> str:
+    """The block that replaces the shed span: an address, then ids and excerpts.
+
+    Nothing here paraphrases. The ids are the same ids the index stores, so a section the model
+    quoted before the shed still resolves after it. The block is the cheap part; the body stays on
+    disk and is pulled only when it is asked for.
+    """
+    rows = {row.get("message_id"): row for row in read_index(data_dir, chat_id)}
+    limit = max(0, int(settings.get("reasoningExcerptChars") or 160))
+    target = file_path if str(file_path).endswith(CHAT_FILE) else f"{file_path}/{CHAT_FILE}"
+    lines = [
+        f"[ROLLOVER {chat_id}] the oldest {len(shed_messages)} sections are on disk at "
+        f"{target}; the ids below are addresses, pull a section by id instead of assuming "
+        "what it said."
+    ]
+    for message in shed_messages or []:
+        if not isinstance(message, dict):
+            continue
+        mid = str(message.get("id") or "")
+        content = str(message.get("content") or "")
+        sid = section_id(mid or content[:32])
+        role = str(message.get("role") or "").lower()
+        excerpt = (rows.get(mid) or {}).get("excerpt") or content.replace("\n", " ")[:limit]
+        if not excerpt:
+            continue
+        lines.append(f"{sid} {role}: {excerpt}")
+    if len(lines) == 1:
+        return ""
+    block = "\n".join(lines)
+    cap = max(1000, int(settings.get("rolloverMaxChars") or 60000))
+    block = block[:cap]
+
+    # The fed-back context is the address plus the last turn's reasoning, nothing else. That is the
+    # shape that keeps a chat coherent after eviction while the body stays on disk and in the vector
+    # store, retrievable by meaning rather than carried in the prompt.
+    if settings.get("reasoningFiles") and settings.get("shedFeedBackReasoning", True):
+        tail = last_reasoning_block(data_dir, chat_id, settings)
+        if tail:
+            block = f"{block}\n\n{tail}"
+    return block
+
+
+def shed_for_prompt(
+    data_dir: str,
+    chat_id: str,
+    messages: list[dict],
+    settings: dict,
+    target_tokens: int,
+    user_id: str = "",
+    token_counter: Any = None,
+) -> tuple[list[dict], dict]:
+    """Move the oldest sections out of the prompt, keeping the verbatim copy on disk.
+
+    Order matters and is the whole safety property: the dump is written first, so nothing leaves
+    the prompt before its copy exists. The stored chat is the source of truth; the prompt keeps an
+    addressable index instead of the text.
+
+    Returns a new list and a report. The input list is never mutated.
+    """
+    messages = list(messages or [])
+    counter = token_counter or (lambda m: estimate_tokens(str(m.get("content") or "")) + 4)
+    target = max(0, int(target_tokens or 0))
+    before = sum(counter(m) for m in messages)
+    report: dict[str, Any] = {
+        "shed": False,
+        "tokens_before": before,
+        "target": target,
+        "removed": 0,
+        "kept_tokens": before,
+        "index_block": "",
+        "path": "",
+        "reason": "",
+    }
+
+    if not settings.get("rollover"):
+        report["reason"] = "rollover is off"
+        return messages, report
+    if not settings.get("rolloverShed"):
+        report["reason"] = "shed is off"
+        return messages, report
+    if before <= target:
+        report["reason"] = "under target"
+        return messages, report
+
+    written = store_chat(data_dir, chat_id, messages, settings, user_id)
+    report["path"] = written.get("path", "")
+    if not written.get("written"):
+        # A failed write means the copy does not exist, so shedding would be data loss. Stop.
+        report["reason"] = "dump failed"
+        return messages, report
+
+    boundary = shed_boundary(messages, target)
+    if boundary <= 0:
+        report["reason"] = "nothing to shed"
+        return messages, report
+
+    shed = messages[:boundary]
+    kept = messages[boundary:]
+    report["shed"] = True
+    report["removed"] = len(shed)
+    # The shed span itself is returned in the report so the wiring can hand it to the vector store.
+    # Evicting from the prompt without indexing is what makes the content unrecoverable by meaning.
+    report["shed_messages"] = shed
+    report["kept_tokens"] = sum(counter(m) for m in kept)
+    report["index_block"] = shed_index_block(data_dir, chat_id, settings, shed, report["path"])
+    report["reason"] = "over target"
+    # The counter is written after the copy exists, so a counted shed is always a shed whose body
+    # is recoverable.
+    report["state"] = bump_rolls(
+        data_dir,
+        chat_id,
+        sum(counter(m) for m in shed),
+        report["reason"],
+        report["kept_tokens"],
+    )
+    return kept, report
+
+
+# --------------------------------------------------------------------------------------
+# per chat state: how many times this chat has been shed
+# --------------------------------------------------------------------------------------
+
+
+STATE_FILE = "state.json"
+
+
+def chat_state(data_dir: str, chat_id: str) -> dict:
+    path = chat_dir(data_dir, chat_id) / STATE_FILE
+    try:
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def bump_rolls(
+    data_dir: str,
+    chat_id: str,
+    shed_tokens: int = 0,
+    reason: str = "",
+    kept_tokens: int = 0,
+) -> dict:
+    """Count a shed. Written only when a shed actually happens.
+
+    That distinction matters: a counter written on every turn is a write per request, and this
+    folder is on the same drive as everything else. The shed rate is a few writes over the life of
+    a long chat, so this stays cheap without needing a throttle.
+    """
+    state = chat_state(data_dir, chat_id)
+    state["rolls"] = int(state.get("rolls") or 0) + 1
+    state["last_shed_at"] = int(time.time())
+    state["last_shed_tokens"] = int(shed_tokens or 0)
+    state["last_kept_tokens"] = int(kept_tokens or 0)
+    if reason:
+        state["last_reason"] = str(reason)[:80]
+    try:
+        (chat_dir(data_dir, chat_id) / STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except OSError:
+        return state
+    return state

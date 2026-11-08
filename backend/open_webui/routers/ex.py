@@ -32,6 +32,8 @@ from open_webui.utils.ex_rollover import (
     FOLDER,
     SECTION_ID,
     branch_order,
+    chat_dir,
+    chat_state,
     manifest,
     mark_carry,
     read_index,
@@ -516,6 +518,29 @@ async def ex_engine(user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="engine status is disabled")
 
     return engine_status(settings, str(DATA_DIR))
+
+
+@router.get("/rollover")
+async def ex_rollover_state(chat_id: str = Query(default=""), user=Depends(get_current_user)):
+    """Per-chat rollover state for the stats row: how many times this chat has been evicted.
+
+    Read from the state file written when a shed happens, so the figure is a count of sheds and not a
+    guess. A chat with zero still answers, because the icon needs the dimmed form: the row shows the
+    state, not only the event.
+    """
+    settings = resolve_ex_settings(user)
+    if not settings.get("rollover"):
+        raise HTTPException(status_code=403, detail="rollover is disabled")
+
+    chat_id = normalize_chat_id(chat_id)
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+
+    return {
+        "chat_id": chat_id,
+        "file": str(chat_dir(str(DATA_DIR), chat_id)),
+        "state": chat_state(str(DATA_DIR), chat_id),
+    }
 
 
 @router.post("/steering")

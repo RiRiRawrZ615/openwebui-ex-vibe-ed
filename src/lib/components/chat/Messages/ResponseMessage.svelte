@@ -67,7 +67,8 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import { estimateMessagesTokens } from '$lib/utils/contextUsage';
 	import { resolveExSettings } from '$lib/utils/exSettings';
-	import { ArrivalRate, formatStatsLine, generationStats, liveStats } from '$lib/utils/exStats';
+	import { ArrivalRate, formatStatsLine, generationStats, liveStats, windowFill, type RolloverState } from '$lib/utils/exStats';
+	import { getExRollover } from '$lib/apis/ex';
 	import { engineChips, engineStatus } from '$lib/utils/engineStatus';
 	// estimateTokens lives in contextUsage.ts, not exStats.ts. It was called at the arrival
 	// sampler without being imported, which threw a ReferenceError on every streaming render
@@ -272,6 +273,28 @@
 	// Message-list estimate only. System prompt and tool schemas are not counted here,
 	// so the row labels the window as message-only.
 	$: exWindowTokens = message ? estimateMessagesTokens(createMessagesList(history, message.id)) : 0;
+
+	// The window fill, from the engine's request size, falling back to the message estimate only when
+	// nothing else is known. Held across the chat so it grows rather than resetting each turn.
+	$: exWindowInfo = windowFill(
+		engineValue?.status,
+		engineValue?.ceiling?.value ?? null,
+		engineValue?.last_prefill ?? null,
+		exWindowTokens
+	);
+
+	// Context rollover state for this chat, read once per chat. The number is the count of sheds the
+	// gate actually performed, taken from the state file it writes when a shed happens, so it is not an
+	// estimate. A shed during this turn shows on the next read rather than in the row that caused it,
+	// which is the honest order: the row reports the state as it stood when the turn began.
+	let exRollover: RolloverState | null = null;
+	let exRollKey = '';
+	$: if (chatId && chatId !== exRollKey) {
+		exRollKey = chatId;
+		getExRollover(chatId, localStorage.token)
+			.then((r) => (exRollover = r?.state ?? null))
+			.catch(() => {});
+	}
 	$: exLive =
 		exSettings.liveStats && message?.role === 'assistant' && !message.done
 			? liveStats(visibleResponseContent, liveElapsedSec, exWindowTokens, liveRate, liveTokenCount)
@@ -1033,9 +1056,9 @@
 							<!-- Stats belong under the answer, not above it. Above, the row pushed the text
 							     down a line and read as a header for the reply instead of a note about it. -->
 							{#if exLive && hasResponseContent}
-								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} />
+								<StatsRow stats={exLive.stats} approximate={true} windowTokens={exWindowTokens} windowInfo={exWindowInfo} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} rollover={exRollover} />
 							{:else if exStats && message.done && !message.error}
-								<StatsRow stats={exStats} approximate={false} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} />
+								<StatsRow stats={exStats} approximate={false} engineChips={exEngineChips} tokenSource={exSettings.statsTokenSource} rollover={exRollover} />
 							{/if}
 						</div>
 					</div>

@@ -69,19 +69,36 @@ CONTEXT_MARKER = "[ex context]"
 # --------------------------------------------------------------------------------------
 
 
-def estimate_tokens(text: Any) -> int:
+# Calibration. The divisor was 4 characters per token, which is about 25 percent optimistic on
+# this tokenizer: the strata bench results measure the real ratio near 3.0 to 3.13 characters per
+# token on mixed prose and code. A chat can report a comfortable budget while the engine counts a
+# much larger prompt, and that gap is one of the two ways this module was being fooled. 3.4 keeps a
+# small margin rather than trimming earlier than the tokenizer actually would.
+CHARS_PER_TOKEN = 3.4
+
+# The tool definitions are part of the prompt and were never counted at all. On this instance the
+# builtin schema block is several thousand tokens, so the gate needs an allowance. It is a floor,
+# not a claim about a specific request.
+DEFAULT_TOOL_SCHEMA_TOKENS = 4096
+
+# Smallest room left for an answer. An engine with no answer room refuses the request outright, so
+# a fit that lands on zero is not a fit; it is the same failure one token earlier.
+ANSWER_ROOM_MIN = 512
+
+
+def estimate_tokens(text: Any, chars_per_token: float = CHARS_PER_TOKEN) -> int:
     """Rough token count.
 
-    Deliberately cheap and slightly pessimistic. A tokenizer call per message per turn costs
-    more than the accuracy is worth here, and being 10 percent high only means trimming a
-    little earlier. Floored at 1 for any non-empty string so a short message never counts as
-    free.
+    Deliberately cheap. A tokenizer call per message per turn costs more than the accuracy is
+    worth here, and being a little high only means trimming a little earlier. Floored at 1 for any
+    non-empty string so a short message never counts as free.
     """
     if not text:
         return 0
     if not isinstance(text, str):
         text = str(text)
-    return max(1, len(text) // 4 + 1)
+    ratio = max(1.0, float(chars_per_token or CHARS_PER_TOKEN))
+    return max(1, int(len(text) / ratio) + 1)
 
 
 def message_tokens(message: dict) -> int:
@@ -108,11 +125,104 @@ def message_tokens(message: dict) -> int:
                 total += estimate_tokens(json.dumps(message[key]))
             except (TypeError, ValueError):
                 total += 8
+    total += output_tokens(message)
+    return total
+
+
+def output_tokens(message: dict) -> int:
+    """Text that only exists in the structured output, and therefore only enters the prompt when the
+    request is assembled.
+
+    This is the half the measurement never saw. Tool results live in `output`; the shaping pass ran on
+    the message list before `process_messages_with_output` turned those items into tool messages, so a
+    chat measured as a few thousand tokens while the engine counted a prompt of 262306. The failing
+    chat is still in the database: 24108 characters of stored content against 2327886 characters of
+    stored output.
+
+    Tool bodies are counted always. Reasoning is counted only when there is no content, because when
+    both exist the prompt carries the content plus the tool result, not two copies of the same text.
+    Same rule ex_rollover uses to decide what a section's text is.
+    """
+    if not isinstance(message, dict):
+        return 0
+    output = message.get("output")
+    if not isinstance(output, list):
+        return 0
+
+    has_content = bool(message.get("content"))
+    total = 0
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "tool":
+            total += estimate_tokens(str(item.get("content") or ""))
+            continue
+        if kind == "message":
+            # Counted only when the reply exists as structured output and nothing else.
+            if has_content:
+                continue
+            body = item.get("content")
+            if isinstance(body, list):
+                for part in body:
+                    if isinstance(part, dict):
+                        total += estimate_tokens(str(part.get("text") or ""))
+            else:
+                total += estimate_tokens(str(body or ""))
+            continue
+        if kind == "reasoning" and not has_content:
+            parts = item.get("summary") or item.get("content") or []
+            if isinstance(parts, str):
+                total += estimate_tokens(parts)
+                continue
+            for part in parts:
+                if isinstance(part, dict):
+                    total += estimate_tokens(str(part.get("text") or ""))
     return total
 
 
 def messages_tokens(messages: Iterable[dict]) -> int:
     return sum(message_tokens(message) for message in messages or [])
+
+
+def projected_tokens(messages: Iterable[dict], tool_schema_tokens: int = 0) -> int:
+    """What the engine will actually count for this request.
+
+    The message list plus the tool definitions. The tool block is the second thing the estimate never
+    saw, and it is a real part of every request with tools active.
+    """
+    try:
+        allowance = max(0, int(tool_schema_tokens or 0))
+    except (TypeError, ValueError):
+        allowance = 0
+    return messages_tokens(messages) + allowance
+
+
+def fit_max_tokens(
+    window: int,
+    prompt_tokens: int,
+    requested: Any,
+    *,
+    answer_room: Any = ANSWER_ROOM_MIN,
+    chars_per_token: float = CHARS_PER_TOKEN,
+) -> int:
+    """The output cap that fits the room the prompt leaves, which is the engine's own rule.
+
+    The engine will not truncate a prompt, so a request asking for more than the window allows is
+    refused. Asking for less is always allowed. Doing the arithmetic here means the request that
+    goes out already satisfies the engine, instead of arriving as a 400 in the middle of a turn.
+    """
+    try:
+        ceiling = int(window)
+        used = int(prompt_tokens)
+        want = int(requested) if requested is not None else 0
+        room = int(answer_room) if answer_room is not None else ANSWER_ROOM_MIN
+    except (TypeError, ValueError):
+        return 0
+    left = ceiling - used - max(ANSWER_ROOM_MIN, room)
+    if left <= 0:
+        return 0
+    return max(0, min(want, left)) if want > 0 else max(0, left)
 
 
 def is_tool_message(message: dict) -> bool:
@@ -540,6 +650,9 @@ def shape_request(
     keep_tool_turns: int = DEFAULT_KEEP_TOOL_TURNS,
     context_block: str | None = None,
     data_dir: Path | str | None = None,
+    tool_schema_tokens: int = DEFAULT_TOOL_SCHEMA_TOKENS,
+    chars_per_token: float = CHARS_PER_TOKEN,
+    settings: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """The one function the middleware calls.
 
@@ -595,4 +708,24 @@ def shape_request(
         )
     else:
         report["over_ceiling"] = 0
+
+    # Two figures that the old report did not have. The tool definitions are part of the prompt, so
+    # the projection is the message list plus the schema block; and the engine will not truncate, so
+    # the only request that survives is one whose output cap fits the room the prompt leaves.
+    settings = settings or {}
+    allowance = max(0, int(tool_schema_tokens or 0))
+    report["tool_schema_tokens"] = allowance
+    report["projected"] = report["tokens_after"] + allowance
+    # The reply reserve is the answer room. There is no separate answerRoom setting because a setting
+    # the code does not read is worse than no setting at all.
+    report["max_tokens_fit"] = fit_max_tokens(
+        detected,
+        report["projected"],
+        max_tokens,
+        answer_room=reply_reserve,
+    )
+    report["engine_fits"] = report["projected"] + report["max_tokens_fit"] <= detected
+    if not report["engine_fits"]:
+        report["would_be_refused"] = report["projected"] + report["max_tokens_fit"] - detected
+
     return shaped, report

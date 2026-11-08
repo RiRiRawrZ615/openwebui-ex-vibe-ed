@@ -49,6 +49,13 @@ DEFAULTS = {
     "trimToolOutput": True,      # trim stale tool results before touching conversation text
     "keepToolTurns": 3,          # tool results kept intact, counted from the end
     "tailInject": True,          # inject context blocks at the tail so the KV cache survives
+    # Two figures the shaping pass never counted. The tool definitions are part of every request with
+    # tools active, and the tool bodies only enter the prompt when the request is assembled, which is
+    # after the old measurement ran. Both are now measured; this is the allowance for the first.
+    "toolSchemaTokens": 4096,    # allowance for the tool definition block
+    "trimTargetRatio": 0.85,     # headroom target after trimming, so the prefix stays stable
+    "fitMaxTokens": True,        # shorten the requested output cap to the room the prompt leaves
+    "enforceCeiling": True,      # refuse locally before the engine does; the engine never truncates
     # Feature E: the UI records the backend choice. It is a preference, not a promise;
     # the status endpoint reports what is actually serving the model.
     "backend": "auto",           # auto | llamacpp | strata
@@ -73,6 +80,16 @@ DEFAULTS = {
     "rollover": True,
     "rolloverThreshold": 0.7,      # fraction of the window that fires the rollover
     "rolloverMaxChars": 60000,     # size of the block fed back; the file on disk keeps everything
+    # Crossing the rollover point has to shrink the prompt, not only record where the next chat should
+    # look. Without this the trigger fired forever and nothing ever got smaller, which is how a chat
+    # reached 262306 tokens against a 262144 window and was refused.
+    "rolloverShed": True,         # move the oldest sections out of the prompt at the trigger
+    "rolloverShedKeepRatio": 0.7,  # kept tail after a shed; the chat grows back to the trigger
+    # What comes back into the prompt after an eviction: the address plus the last turn's reasoning.
+    # Everything else is pulled by id or by similarity, so the prompt does not carry a copy of the
+    # chat twice.
+    "shedFeedBackReasoning": True,  # the most recent reasoning block returns verbatim
+    "shedReasoningChars": 2000,      # cap on that one block, not on the chat
     "reasoningFiles": True,        # one file per reasoning block, addressed by id
     "reasoningOnDemand": True,     # ids are attached to sections so a block can be pulled back
     "reasoningExcerptChars": 160,  # length of one index line
