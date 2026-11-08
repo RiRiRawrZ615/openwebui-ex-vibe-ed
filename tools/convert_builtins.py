@@ -249,12 +249,23 @@ def main() -> int:
         # Record which wrappers were emitted, so a mismatch against the export's own spec
         # list is visible instead of silent.
         tree = ast.parse(converted)
-        emitted = sorted(
+        declared = sorted(set(tool['specs']))
+        # `exposed` has to mean the names the registry can actually register. A public
+        # module-level helper is not a tool even when it is callable by name, so it is kept out
+        # of `exposed` and reported separately instead of being mixed into the tool list.
+        helpers = sorted(
             n.name
             for n in tree.body
-            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and not n.name.startswith('_')
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and not n.name.startswith('_')
+            and n.name not in declared
         )
-        declared = sorted(set(tool['specs']))
+        emitted = [n for n in declared if any(
+            isinstance(n_node, (ast.AsyncFunctionDef, ast.FunctionDef)) and n_node.name == n
+            for n_node in tree.body
+        )]
+        if helpers:
+            print(f'        helpers kept out of the tool list: {", ".join(helpers)}')
         manifest[slug] = {
             'tool_id': tool['id'],
             'name': tool['name'],

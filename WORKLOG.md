@@ -721,3 +721,24 @@ tab header already says Help.
 committed. The harness previously hardcoded the stable fork, so a change made on the dev copy could
 not be proved by it; `test_ex_tools.py` now takes the same `EX_FORK_DIR` override with the same
 default.
+
+## 2026-11-07, tool wiring: a helper was listed as a tool, and extract read from the wrong directory
+
+### Verified
+`hashlib_sha1` was in leanrea's `exposed` list but not in `specs`. `specs` is the allowlist
+`get_function` uses, so nothing failed at runtime, but `exposed` was claiming a tool that is not one,
+and that is what the tools page shows. The converter's own docstring says helpers stay unexposed, so
+the rule was wrong rather than the data: `exposed` is now built from the declared specs and public
+module-level helpers go in a separate `helpers` field.
+
+`extract()` resolved a bare filename against the process cwd, so a target sitting in the project work
+dir reported "No extraction method for unreadable". Added `_resolve()`, tried against the project
+dir, then its work dir, then the root. Verified with a synthetic zip in a scratch project; the scratch
+dir was removed after, and no sample target was used.
+
+The tool export snapshot was patched the same way, because builtins are generated from the exports:
+fixing only the generated file would be lost on the next regeneration. The snapshot lives in
+`Code/openwebui-tools/repo_snapshot` and is not in this repo, so that half is disk-only.
+
+### Harness
+`test_ex_tools.py`, 29 checks, 5 added for the manifest rule and the extract resolution.

@@ -146,6 +146,18 @@ class Tools:
     def _rel(self, st: dict, path: str) -> str:
         return path.replace(st['dir'], '...')
 
+    def _resolve(self, st: dict, target: str) -> str:
+        # A bare filename used to be opened from the process cwd, so extract() reported
+        # 'No extraction method for unreadable' for a relative target even though the file was
+        # sitting in the project work dir. Resolve against the project first, then the root.
+        path = os.path.expanduser(target)
+        if not os.path.isabs(path):
+            for base in (st['dir'], os.path.join(st['dir'], 'work'), self._root()):
+                cand = os.path.join(base, path)
+                if os.path.exists(cand):
+                    return cand
+        return path
+
     def _budget(self, st: dict) -> str:
         ceiling = int(st['context']['ceiling'])
         used = int(st['context'].get('chars', 0))
@@ -416,6 +428,7 @@ class Tools:
         src = target or st.get('target', {}).get('path')
         if not src:
             return 'No target. Run plan() or pass target.'
+        src = self._resolve(st, src)
         kind = method if method != 'auto' else self._detect(src)
         dest = os.path.join(st['dir'], 'extracted', kind)
         table = {'asar': "npx -y @electron/asar extract '%s' '%s'", 'apk': "apktool d -no-src -f -o '%s' '%s'", 'zip': "unzip -o -q '%s' -d '%s'", 'dex': "unzip -o -q '%s' -d '%s'", 'jar': "unzip -o -q '%s' -d '%s'", 'firmware': "unblob -e '%s' '%s' 2>&1 | head -20"}
