@@ -41,7 +41,7 @@ cp -a build "%{buildroot}/usr/lib/openwebvibes/"
 install -m 755 packaging/launcher/owv.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv.sh"
 install -m 755 packaging/launcher/owv-packaged.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-packaged.sh"
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
-ln -s /usr/lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
+ln -s ../lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
 
 install -m 644 packaging/etc/openwebvibes/owv.conf "%{buildroot}/etc/openwebvibes/owv.conf"
 install -m 644 packaging/s6/openwebvibes/type "%{buildroot}/etc/s6-overlay/s6-rc.d/openwebvibes/type"
@@ -62,7 +62,7 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
-* Sat Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.0-1.rc1
+* Sun Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.0-1.rc1
 - Stats row: the ctx chip reports the window fill (request size, or last request size plus this
   turn), not a per-turn count. The chip names its source.
 - Engine log: prefill and generation numbers are kept apart, so the fraction grows in the right
@@ -72,7 +72,7 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 - Packaging: Source0 added (rpmbuild could not find the source), the source archive no longer
   contains itself, and *.spec no longer hides the spec from git.
 
-* Fri Nov 07 2026 Qwen 3.8 <qwen@localhost> - 1.0.0-1.rc1
+* Sat Nov 07 2026 Qwen 3.8 <qwen@localhost> - 1.0.0-1.rc1
 - Context gate: measure after tool results are materialized, trim stale tool output, force-evict at
   the rollover point, fit the output cap to the room left, refuse locally before the engine does.
 - Rollover shed: verbatim dump written first, evicted span handed to the vector store, prompt keeps
