@@ -16,7 +16,9 @@ fi
 
 mkdir -p "$BUILDDIR"/SPECS "$BUILDDIR"/SOURCES "$BUILDDIR"/BUILD "$BUILDDIR"/RPMS "$BUILDDIR"/BUILDROOT
 
-tar -C "$REPO" --exclude=.git --transform 's#^#openwebvibes/#' \
+# The build dir lives under packaging/, which is itself part of the payload, so the archive was
+# writing into itself and came out empty. The tree being packed is excluded from its own archive.
+tar -C "$REPO" --exclude=.git --exclude="$BUILDDIR" --transform 's#^#openwebvibes/#' \
     -cf "$BUILDDIR/SOURCES/openwebvibes.tar.gz" backend build packaging tests
 
 cp "$ROOT/openwebvibes.spec" "$BUILDDIR/SPECS/openwebvibes.spec"
