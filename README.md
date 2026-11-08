@@ -1,6 +1,13 @@
-<h2>Open WebUI</h2>
+<h2>Open Web Vibes</h2>
 
-<p>Open WebUI is <a href="https://docs.openwebui.com/"><strong>a home for AI</strong></a>: an extensible, easy-to-use, self-hosted platform built to run entirely offline. Connect local models through Ollama or use OpenAI-compatible APIs for local and cloud models.</p>
+<p align="center">
+  <img src="docs/screenshots/owv-icon.png" width="120" alt="Open Web Vibes icon" />
+</p>
+
+<p>A fork of <a href="https://docs.openwebui.com/"><strong>Open WebUI</strong></a> built for running huge
+local models on one machine with an offline engine. The chat interface is the one you know. What this
+fork exists to do is carry the parts upstream cannot or will not add: the context gate, the off-device
+compute layer, support for every backend, and installing a backend from inside the app.</p>
 
 [English](README.md) |
 [简体中文](README.zh.md) |
@@ -11,35 +18,74 @@
 [Français](README.fr.md) |
 [Italiano](README.it.md) |
 [Dansk](README.da.md) |
-[日本語](README.ja.md) |
-[Polski](README.pl.md) |
-[Русский](README.ru.md) |
-[Bosanski](README.bs.md) |
-[العربية](README.ar.md) |
-[Norsk](README.no.md) |
-[Português (Brasil)](README.br.md) |
-[ไทย](README.th.md) |
 [Türkçe](README.tr.md) |
-[Українська](README.uk.md) |
-[বাংলা](README.bn.md) |
-[Ελληνικά](README.gr.md) |
-[Tiếng Việt](README.vi.md)
+[Русский](README.ru.md) |
+[Polski](README.pl.md) |
+[Nederlands](README.nl.md) |
+[Filipino](README.fil.md) |
+[Tiếng Việt](README.vi.md) |
+[Português](README.pt.md) |
+[فارسی](README.fa.md) |
+[हिन्दी](README.hi.md)
 
-[![Open WebUI Demo](https://cdn.openwebui.com/open-webui-demo.gif)](https://docs.openwebui.com/)
+<p align="center">
+  <a href="https://github.com/open-webui/open-webui/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue.svg" alt="License" /></a>
+  <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://img.shields.io/badge/tools-GPL--3.0-blue.svg" alt="Builtin tools license" /></a>
+</p>
 
-![GitHub stars](https://img.shields.io/github/stars/open-webui/open-webui?style=social)
-![GitHub forks](https://img.shields.io/github/forks/open-webui/open-webui?style=social)
-![GitHub watchers](https://img.shields.io/github/watchers/open-webui/open-webui?style=social)
-![GitHub repo size](https://img.shields.io/github/repo-size/open-webui/open-webui)
-![GitHub language count](https://img.shields.io/github/languages/count/open-webui/open-webui)
-![GitHub top language](https://img.shields.io/github/languages/top/open-webui/open-webui)
-![GitHub last commit](https://img.shields.io/github/last-commit/open-webui/open-webui?color=red)
-[![Discord](https://img.shields.io/badge/Discord-Open_WebUI-blue?logo=discord&logoColor=white)](https://discord.gg/5rJgQTnV4s)
-[![](https://img.shields.io/static/v1?label=Sponsor&message=Support&logo=GitHub&color=%23fe8e86)](https://github.com/sponsors/open-webui)
+## Screenshots
 
-[Explore Open WebUI →](https://docs.openwebui.com/)
+| Screen | What is in it |
+| --- | --- |
+| ![Main screen](docs/screenshots/main-screen.jpg) | Home. Fork icon, model chip for Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS, tool count, the Open Web Vibes footer. |
+| ![Test chat](docs/screenshots/test-chat.jpg) | A turn with the stats row: `in 29,659`, `tok/s 52.5`, `prefill 510.0`, `t 9.1 s`, `engine 57.1 tok/s`, `ctx 309/262,144`, `eta 2290.1 s`. |
+| ![Tools and speed](docs/screenshots/tools-and-speed.jpg) | A streaming turn. Engine rate and window fill against the engine's configured window, the message-list estimate kept as its own chip, tool activity in one collapsed panel. |
+| ![OpenWebVibes settings](docs/screenshots/openwebvibes-screen.jpg) | Settings tab. Handshake values come from the launcher, so `ctx_size 262144` is read-only in the UI. Reasoning turns kept in the prompt, tool outputs kept in full, loop guard. |
+| ![Themes](docs/screenshots/themes-screen.jpg) | Theme engine. Every pairing that carries text is measured against WCAG AA, and a failing pairing emits no CSS. |
+| ![Help](docs/screenshots/help-screen.jpg) | Help tab, its own tab rather than a section at the bottom of the settings page. |
 
----
+## What this fork is for
+
+Upstream Open WebUI is a good front end for a local model that fits in memory. This fork is about the
+things that stop working once the model is bigger than the machine and the chat is longer than the
+window, and about the features a single machine fork needs that a multi-user web app will not take on.
+
+**What is here now**
+
+- **The context gate.** The request is measured after tool results are materialized, so the number
+  matches what the engine bills. The rollover point fires instead of the prompt growing until the
+  engine answers 400. Evicted text goes to disk verbatim plus an addressable index, and to the vector
+  store, so it is still findable by meaning.
+- **One machine, one model.** No browser Python runtime, no eight editor packages, no model call to
+  paraphrase old messages, and no feature meter paid per user.
+- **Nine builtin tools, enabled on first launch**, editable without an update overwriting the edit.
+- **Honest stats.** `in` reports the current request, not a running total; prefill is kept apart from
+  the turn count; the window fill chip names where its number came from.
+
+**What this fork exists to add**
+
+- **Off-device cluster.** Other devices as workers: the laptop is the master, a phone is a memory and
+  compute pool the master draws on, reached over ggml-rpc on the LAN only. `ex_cluster.py` is the pure
+  planning layer; the transport is not wired yet.
+- **Support for all backends, and backend install from inside the app.** The choice is per model: a
+  GGUF is a llama.cpp candidate, a prepared pack is a Strata candidate. The app records the choice and
+  writes an install plan the launcher executes; it never boots a server by itself. `ex_backend.py` and
+  `ex_discover.py`.
+- **MCP is already upstream**, so what is left here is the part upstream cannot do on one machine:
+  tool results counted against the window and sheddable at the rollover point, so a tool-heavy chat
+  does not die at the engine limit.
+- **Crash-surviving turns** with a throttled write policy, so a turn is not lost when the process dies,
+  and so a buffer does not write on every arrival.
+
+**Why any of this is possible on a laptop**
+
+Strata. Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS and DeepSeek Flash Next are mixture-of-experts models whose
+routed expert set is larger than local VRAM. Strata keeps the shared expert resident and pulls the
+routed experts over PCIe, which is what makes a model of that size answer at a usable rate on this box.
+The runs that produced these screenshots say it plainly: 262,144 context, engine rates around 50 to 57
+tok/s, and an expert cache hitting 82.7% with 11.8% of the routed experts fetched over PCIe. This fork
+running that model on this machine, with a 262k window held open by the gate instead of compaction, is
+the proof it can be done.
 
 ## Open Web Vibes
 
@@ -101,6 +147,19 @@ There is a one-click revert.
 - **One Connections tab.** There were two, one showing only the connections set per user and one
   showing the whole stored list with the model paths. The per-user one is gone; the full list is
   what remains.
+
+### Backup and restore
+
+One button, as-is copy, nothing rebuilt. `backup-owv` mirrors the whole install to the NAS and
+`sync-owv` mirrors it back, same shape as the stock `backup-oui` and `sync-oui` aliases: `rsync`, no
+archive, no database rebuild, no cache clearing, nothing deleted, so a restore is a copy and not a
+reinstall. The stock Open WebUI aliases are untouched.
+
+The set is the fork tree, the dev tree, the data dir, the runtime data and state, the launchers, and the
+terminal api key file. The first run is about 12.6 GB and most of that is regenerable material: 7.3 GB
+of venv and 1.7 GB of node_modules. After the first run only deltas move. If you want the backup small,
+add `--lean` to skip venv, node_modules, .svelte-kit, build and .git, which brings it to about 1.9 GB,
+and a restore on a new machine then needs `uv sync` and `npm install`.
 
 ### Help inside the app
 
