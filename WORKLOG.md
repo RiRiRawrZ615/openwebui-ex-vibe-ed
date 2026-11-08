@@ -699,3 +699,25 @@ Two things found in the dev launcher itself while verifying it:
 
 A stray dev database created by the first version was removed. The live database was never touched;
 its mtime is 17:15 and the run that created the copy was 17:30.
+
+## 2026-11-07, settings tabs: the duplicate Connections tab and the Help tab
+
+### Reported
+Two tabs in settings were both named Connections. One showed only tokenharbor.
+
+### What the two tabs actually were (verified in the live database, read only)
+The personal `connections` tab renders `settings.directConnections`, which for this instance holds
+exactly `["https://tokenharbor.ai/v1"]`. The `admin:connections` tab reads the stored connection
+list: 8005, 8004, 5000, 192.168.1.37, tokenharbor, groq, plus the ollama, terminal and tool server
+sections. Same thing at two scopes reads as a duplicate, so the narrow tab is removed and the full
+one, the one with the model paths, is kept.
+
+Help moved from a section at the bottom of the OpenWebVibes tab to its own tab, with a locale key so
+its title is translatable. The component no longer wraps itself in a section titled Help, since the
+tab header already says Help.
+
+### Harness
+`test_ex_settings_tabs.py`, 14 checks, reads the source so it can be pointed at the tree about to be
+committed. The harness previously hardcoded the stable fork, so a change made on the dev copy could
+not be proved by it; `test_ex_tools.py` now takes the same `EX_FORK_DIR` override with the same
+default.

@@ -98,12 +98,16 @@ There is a one-click revert.
 - **Streaming is paced**, so a backend that sends text in bursts still reads smoothly.
 - **The blinking cursor is gone.** With a chunked engine it drew attention to the pauses rather
   than the words.
+- **One Connections tab.** There were two, one showing only the connections set per user and one
+  showing the whole stored list with the model paths. The per-user one is gone; the full list is
+  what remains.
 
 ### Help inside the app
 
-**Settings → OpenWebVibes → Help** answers the questions these changes raise, including where
-things are stored and how to back up an install. It is written to be read at the moment something
-looks odd, which is when it is actually useful.
+**Settings → Help** answers the questions these changes raise, including where things are stored
+and how to back up an install. It is its own tab now rather than a section inside the OpenWebVibes
+tab, because the questions it answers are not about the vibes settings specifically, and a search
+for "help" lands on a tab rather than on a page you have to scroll to the bottom of.
 
 ### Reporting something
 

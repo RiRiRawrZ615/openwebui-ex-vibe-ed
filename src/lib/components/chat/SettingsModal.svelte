@@ -27,6 +27,7 @@
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
 	import OpenWebVibes from './Settings/OpenWebVibes.svelte';
+	import Help from './Settings/Help.svelte';
 	import SetupTab from './Settings/SetupTab.svelte';
 	import ThemesTab from './Settings/ThemesTab.svelte';
 	import ExSlotHost from '../ex/ExSlotHost.svelte';
@@ -157,6 +158,7 @@
 		tools: $i18n.t('Services'),
 		personalization: $i18n.t('Preferences'),
 		vibes: $i18n.t('Fork'),
+		help: $i18n.t('Fork'),
 		setup: $i18n.t('Fork'),
 		themes: $i18n.t('Fork'),
 		audio: $i18n.t('Preferences'),
@@ -245,6 +247,14 @@
 			titleKey: 'settings.personal.vibes.title',
 			title: $i18n.t('settings.personal.vibes.title'),
 			searchPrefixes: ['settings.personal.vibes.']
+		},
+		{
+			id: 'help',
+			titleKey: 'settings.personal.help.title',
+			title: $i18n.t('settings.personal.help.title'),
+			// The help content is written in the component, not in the locale, so the settings search
+			// cannot index its questions. The tab is reachable by searching for its title.
+			searchPrefixes: []
 		},
 		{
 			id: 'setup',
@@ -463,9 +473,13 @@
 
 		// This fork runs local engines. Surfaces that only make sense against a hosted account are
 		// removed rather than merely disabled, so nobody goes looking for a feature that cannot
-		// work here: the evaluation arena and its Elo leaderboard, and the outbound provider
-		// connections that would bill an external account.
-		const forkHiddenTabs = new Set(['admin:evaluations']);
+		// work here: the evaluation arena and its Elo leaderboard.
+		//
+		// Two tabs were named Connections. The personal one lists only the user's own direct
+		// connections, which for this instance is the single tokenharbor entry, while the admin one
+		// lists the whole stored connection list. Same thing at two scopes reads as a duplicate, so
+		// the narrow tab is removed and the full one is kept.
+		const forkHiddenTabs = new Set(['admin:evaluations', 'connections']);
 
 		return (
 			$user?.role === 'admin' ? [...personalSettings, ...administratorTabs] : personalSettings
@@ -976,6 +990,8 @@
 					{saveSettings}
 					onSave={() => toast.success($i18n.t('Settings saved successfully!'))}
 				/>
+			{:else if selectedTab === 'help'}
+				<Help />
 			{:else if selectedTab === 'setup'}
 				<SetupTab {saveSettings} on:save={() => toast.success($i18n.t('Settings saved successfully!'))} />
 			{:else if selectedTab === 'themes'}

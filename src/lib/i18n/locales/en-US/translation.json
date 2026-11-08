@@ -4621,5 +4621,6 @@
   "{{percent}}% full": "",
   "{{tokens}} tokens": "{{tokens}} tokens",
   "{{user}}'s Chats": "",
-  "{{webUIName}} Backend Required": ""
+  "{{webUIName}} Backend Required": "",
+  "settings.personal.help.title": "Help"
 }

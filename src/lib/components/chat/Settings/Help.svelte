@@ -1,5 +1,7 @@
 <!--
-  Help: what this fork is, what it changed, and how the tools behave.
+  The Help tab in settings: what this fork is, what it changed, and how the tools behave.
+  Moved out of the OpenWebVibes tab, where it was rendered as a section inside a settings
+  tab that already had its own content. It is its own tab now.
 
   Why a Help tab rather than a link to the README
   ----------------------------------------------
@@ -20,7 +22,6 @@
   an entry does not mean touching markup.
 -->
 <script lang="ts">
-	import UserSettingSection from './UserSettingSection.svelte';
 
 	type Entry = { question: string; answer: string; bullets?: string[] };
 
@@ -183,7 +184,7 @@
 	];
 </script>
 
-<UserSettingSection title="Help">
+<div class="space-y-4">
 	<p class="mb-4 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
 		What this app is, what it changed from stock Open WebUI, and how the builtin tools behave.
 	</p>
@@ -231,4 +232,4 @@
 	<div class="mt-4 border-t border-gray-100 pt-3 text-[0.6875rem] text-gray-400 dark:border-gray-850 dark:text-gray-500">
 		Built on Open WebUI. Upstream licence and notices are unchanged.
 	</div>
-</UserSettingSection>
+</div>

@@ -33,7 +33,6 @@
 	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { exSlots, refreshSlots } from '$lib/stores/exSlots';
 	import BuiltinsSection from './BuiltinsSection.svelte';
-	import HelpSection from './HelpSection.svelte';
 
 	const i18n: Writable<i18nType> = getContext('i18n');
 	const dispatch = createEventDispatcher();
@@ -1292,5 +1291,4 @@
 			</p>
 		{/if}
 	{/if}
-		<HelpSection />
 	</div>
