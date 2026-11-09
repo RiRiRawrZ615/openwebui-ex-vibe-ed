@@ -369,6 +369,42 @@ def loop_check(output_items: list[dict], messages: list[dict], settings: dict, a
     }
 
 
+def shape_retry_decision(settings: dict, markup: dict, *, attempt: int = 1, streamed: bool = False) -> dict:
+    """Whether prose tool markup should force another request.
+
+    The observed failure is a reply that writes <tool_call> as message text with a name the
+    request never declared, or in a form the chat template does not emit. Strata cannot execute it,
+    so the block comes back as text, and the turn answers with markup instead of running a tool.
+    Detection alone is not the fix: the turn has to be re-run with the corrective note attached.
+
+    Only an undeclared name counts. Markup naming a declared tool is a formatting miss, and the
+    note there is enough; re-running a request that would have worked is not a correction.
+
+    The partial output rule still applies. Text already streamed cannot be replayed without
+    appending it twice, so a shape retry after streaming is refused here and reported as such.
+    """
+    settings = settings or {}
+    names = sorted(set(markup.get("unknown") or []))
+    if not names:
+        return {"retry": False, "names": [], "note": "", "reason": "no undeclared name to correct"}
+
+    verdict = decide(
+        "tool name the request did not declare",
+        attempt=attempt,
+        max_retries=settings.get("maxRetries", 3),
+        shape_retries=settings.get("shapeRetries", 1),
+        base_backoff=settings.get("backoffSeconds", 2.0),
+    )
+    permitted = retry_permitted(verdict, partial_output=streamed)
+    return {
+        "retry": bool(permitted.get("permitted")) and bool(settings.get("autoRetry", True)),
+        "names": names,
+        "note": corrective_note(settings, names),
+        "reason": permitted.get("reason", ""),
+        "class": verdict.get("class"),
+    }
+
+
 
 def _memory(data_dir) -> ChatMemory:
     """One store handle per call. Cheap to build, and stateless between requests."""

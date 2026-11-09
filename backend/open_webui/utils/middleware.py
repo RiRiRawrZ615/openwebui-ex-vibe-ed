@@ -107,6 +107,7 @@ from open_webui.utils.ex_wiring import (
     index_chat_memory,
     journal_window,
     loop_check,
+    shape_retry_decision,
     mark_rollover,
     read_previous_context,
     reasoning_on_demand,
@@ -3506,6 +3507,10 @@ async def resume_tool_calls(request, form_data, user, model, metadata, message) 
             )
     normalize_messages_for_model(form_data)
 
+    # Set when the guard finds tool markup written as prose with an undeclared name. Repeating the
+    # identical request does not fix that shape, so the re-run has to carry the corrective note and the
+    # turn must not end with the markup presented as the answer.
+    ex_shape_retry_pending = False
     while True:
         async with Chats.edit_message_output(chat_id, message_id) as saved:
             if not saved:
@@ -5967,12 +5972,28 @@ async def streaming_chat_response_handler(response, ctx):
                             if guard['hit'].get('verdict') != 'clean' and guard['note']:
                                 ex_guard_hit = guard
                                 insert_at = guard['insert_at']
+                                shape = shape_retry_decision(
+                                    ex_settings,
+                                    guard.get('markup') or {},
+                                    attempt=tool_call_iterations,
+                                    streamed=bool(output),
+                                )
                                 note_msg = {
-                                    'role': 'user',
+                                    # System role, matching the steering drain. A guard note written as a
+                                    # user turn reads as something the user said, and the model answers the
+                                    # note instead of the request it was given.
+                                    'role': 'system',
                                     'content': guard['note'],
                                     'exLoopGuard': True,
                                 }
                                 messages.insert(insert_at, note_msg)
+                                if shape.get('retry'):
+                                    ex_shape_retry_pending = True
+                                    log.warning(
+                                        'EX shape retry forced: %s (%s)',
+                                        guard['hit'].get('reason'),
+                                        ', '.join(shape.get('names') or []),
+                                    )
                                 log.warning('EX loop guard: %s', guard['hit'].get('reason'))
                                 if event_emitter:
                                     await event_emitter(
@@ -5981,6 +6002,7 @@ async def streaming_chat_response_handler(response, ctx):
                                             'data': {
                                                 'action': 'ex_loop_guard',
                                                 'description': guard['hit'].get('reason'),
+                                                'shape_retry': bool(shape.get('retry')),
                                                 'done': True,
                                             },
                                         }
@@ -6569,6 +6591,12 @@ async def streaming_chat_response_handler(response, ctx):
                             await emit_message_error(get_message_error_content(get_response_error_detail(res)))
                             break
                         else:
+                            if ex_shape_retry_pending:
+                                # The reply came back as text markup, not as an executable call. Ending the
+                                # turn here would answer the user with a tool block. Re-request once with the
+                                # note already inserted at the boundary.
+                                ex_shape_retry_pending = False
+                                continue
                             break
                     except Exception as e:
                         error_content = get_message_error_content(e)
