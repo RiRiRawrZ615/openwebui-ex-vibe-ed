@@ -62,7 +62,10 @@ mkdir -p "$BUILDDIR"/SPECS "$BUILDDIR"/SOURCES "$BUILDDIR"/BUILD "$BUILDDIR"/RPM
 # the code guards the absence, both.
 # A comment placed inside a line continuation is not a comment: the continuation consumed it and tar
 # received the words as arguments, which is the "must specify one of -Acdtrux" failure.
-tar -C "$REPO" --exclude=.git --exclude="$BUILDDIR" --transform 's#^#openwebvibes/#' \
+# Byte-compiled caches were being shipped. A .pyc carried from the build machine is a stale copy of
+# a source file, and python prefers the cache when the recorded source mtime and size match, so a
+# packaged install can run code that is not the code in the archive. Caches are excluded.
+tar -C "$REPO" --exclude=.git --exclude="$BUILDDIR" --exclude=__pycache__ --transform 's#^#openwebvibes/#' \
     -cf "$BUILDDIR/SOURCES/openwebvibes.tar.gz" backend build packaging tests CHANGELOG.md
 
 cp "$ROOT/openwebvibes.spec" "$BUILDDIR/SPECS/openwebvibes.spec"
