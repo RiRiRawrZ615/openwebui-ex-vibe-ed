@@ -360,8 +360,12 @@ profile_for_model() {
     local model="$1"
     [[ -d "$PROFILES_DIR" ]] || return 1
     local stem="$(basename "$model" | sed 's/\.gguf$//; s/[^A-Za-z0-9_.-]/_/g')"
+    # The profile files on disk turn every dot into an underscore: Qwen3.6 is stored as Qwen3_6 and
+    # .i1 as _i1. The literal stem and the underscore form are therefore two different names, and a
+    # model whose file name contains a dot missed its profile under the first version of this.
+    local alt="${stem//./_}"
     local cand
-    for cand in "${PROFILES_DIR}/local_${stem}_gguf.json" "${PROFILES_DIR}/${stem}.json" "${PROFILES_DIR}/local_${stem}.json"; do
+    for cand in "${PROFILES_DIR}/local_${stem}_gguf.json" "${PROFILES_DIR}/local_${alt}_gguf.json" "${PROFILES_DIR}/${stem}.json" "${PROFILES_DIR}/${alt}.json" "${PROFILES_DIR}/local_${stem}.json" "${PROFILES_DIR}/local_${alt}.json"; do
         [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
     done
     return 1
