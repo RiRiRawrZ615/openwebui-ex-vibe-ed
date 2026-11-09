@@ -54,17 +54,17 @@
 
 set -uo pipefail
 
-LAUNCHER_DIR="${OWV_LAUNCHER_DIR:-$HOME/Documents/AI_Output/ai-launchers}"
+LAUNCHER_DIR="${OWV_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # --- scope resolution ---------------------------------------------------------------------
 PROD_RUNTIME_DIR="${OWV_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/openwebvibes}"
-PROD_CODE_DIR="$HOME/Documents/AI_Output/Forks/vibe-ed"
+PROD_CODE_DIR="${OWV_CODE_DIR:-$HOME/Documents/AI_Output/Forks/vibe-ed}"
 PROD_WEBUI_PORT="${OWV_WEBUI_PORT:-8080}"
 PROD_ENGINE_PORT="${OWV_API_PORT:-8004}"
 PROD_TERMINAL_PORT="${OWV_TERMINAL_PORT:-8003}"
 
 DEV_RUNTIME_DIR="${OWV_DEV_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/openwebvibes-dev}"
-DEV_CODE_DIR="$HOME/Documents/AI_Output/Dev/vibe-ed-dev"
+DEV_CODE_DIR="${OWV_DEV_CODE_DIR:-$HOME/Documents/AI_Output/Dev/vibe-ed-dev}"
 DEV_WEBUI_PORT="${OWV_DEV_WEBUI_PORT:-8090}"
 DEV_ENGINE_PORT="${OWV_DEV_API_PORT:-8005}"
 DEV_VISION_PORT="${OWV_DEV_VISION_PORT:-8006}"
@@ -169,11 +169,13 @@ scope_ports() {
 
 matches_scope() {
     # A pid belongs to this scope only if its cmdline or cwd points at this scope's code copy.
-    local pid="$1" code="$2" cmd cwd
+    local pid="$1" code="$2" runtime="$3" cmd cwd
     [[ -d "/proc/$pid" ]] || return 1
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
-    [[ "$cmd" == *"$code"* || "$cwd" == "$code" || "$cwd" == "$code"/* ]]
+    [[ "$cmd" == *"$code"* || "$cwd" == "$code" || "$cwd" == "$code"/* ]] && return 0
+    [[ -n "$3" ]] && read_env "$pid" | grep -qx "OWV_RUNTIME_DIR=$3"
+    return 1
 }
 
 # A descendant of the launcher is only a service if its own command line is one. The launcher's
@@ -283,7 +285,7 @@ descendants() {
 }
 
 in_scope() {
-    local pid="$1" launcher="$2" code="$3"
+    local pid="$1" launcher="$2" code="$3" runtime="${4:-}"
     [[ -z "$pid" || ! -d "/proc/$pid" ]] && return 1
     # Never match the shell issuing the call. A command line containing the words being searched
     # for is how a kill script ends up reporting itself as a target.
@@ -301,7 +303,7 @@ in_scope() {
     #    process belongs to the scope if it is a descendant of this scope's launcher or its cmdline
     #    or cwd points at this scope's code copy. Out-of-scope candidates are not printed.
     for pid in $( (descendants "${launcher:-}"; pgrep -f 'open_webui|open_terminal|owv\.sh|strata|llama-server' 2>/dev/null) | sort -u); do
-        in_scope "$pid" "$launcher" "$code" && kill_one "$pid" "$scope" "descendant/straggler"
+        in_scope "$pid" "$launcher" "$code" "$runtime" && kill_one "$pid" "$scope" "descendant/straggler"
     done
 
     # 4. port holdouts

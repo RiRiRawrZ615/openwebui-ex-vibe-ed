@@ -145,9 +145,13 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     alias owv="bash $here/owv.sh"
     alias owv-tmux="tmux new-session -d -s owv \"cd $here && ./owv.sh\""
-    # Fork owns these ports only while it is running. Kill by the fork's own pid files first,
-    # then by process name. No fuser on shared ports, because that would take a live instance down.
-    alias kill-owv="for p in \$HOME/.cache/openwebvibes/*.pid; do [ -f \"\$p\" ] && kill \"\$(cat \"\$p\")\" 2>/dev/null; done; pkill -9 -f 'owv.sh|openwebvibes'; tmux kill-session -t owv 2>/dev/null || true"
+    # Scope, ownership, and self-preservation live in owv-kill.sh. One instance per call, one
+    # code copy per scope, and a refusal when the caller is standing inside the instance being
+    # pointed at. --force is the deliberate escape hatch.
+    alias kill-owv="bash $here/owv-kill.sh"
+    alias kill-owv-dirty="bash $here/owv-kill.sh --force"
+    alias kill-owv-dev="bash $here/owv-kill.sh --dev"
+    alias kill-owv-dev-dirty="bash $here/owv-kill.sh --dev --force"
     return 0 2>/dev/null
 fi
 
