@@ -87,14 +87,33 @@ FORK_BACKEND="$FORK_DIR/backend"
 # are not it; the crash log proves it (ModuleNotFoundError: open_webui under python3.14).
 FORK_PY="${OWV_PYTHON:-${FORK_DIR}/.venv/bin/python}"
 
-# Data dir. Defaults to the live instance's dir so the fork replaces it with your conversations
-# intact. Point OWV_DATA_DIR somewhere else if you want a clean fork database instead.
-DATA_DIR="${OWV_DATA_DIR:-$OWV_HOME/.open-webui-llamacpp-safe-v4}"
+# Data dir. The fork's own home is $XDG_DATA_HOME/openwebvibes, which is where the sync-owv
+# alias restores the database, so that is the default. The previous default pointed at the stock
+# instance's dir instead, which meant a machine that had just run sync-owv read a different
+# database from the one that had just been written: the chat history was intact, the models and
+# the added model were not, and the write path and the read path disagreed because they were two
+# different files.
+#
+# It must also be exported, not just computed. Every other setting here is exported, so a value
+# that is only a shell variable is invisible to the python process, and env.py falls back to
+# BACKEND_DIR/data, which on a packaged install is /usr/lib/openwebvibes/backend/data and holds
+# nothing but readme.txt.
+DATA_DIR="${OWV_DATA_DIR:-${XDG_DATA_HOME:-$OWV_HOME/.local/share}/openwebvibes}"
+export DATA_DIR
 RUNTIME_DIR="${OWV_RUNTIME_DIR:-${XDG_CACHE_HOME:-$OWV_HOME/.cache}/openwebvibes}"
 LOG_DIR="${OWV_LOG_DIR:-${XDG_STATE_HOME:-$OWV_HOME/.local/state}/openwebvibes}"
 
 MODEL_ROOT="${OWV_MODEL_ROOT:-$OWV_HOME/Documents/AI_Models}"
 MODEL_PATH="${OWV_MODEL:-}"
+
+# Per-model profiles. The stock launcher had PROFILES_DIR and the packaged launcher had none, so
+# on an RPM machine nothing reads ~/Documents/llama_profiles at all: ngl, flash attention, cache
+# type, batch size, the binary itself and everything in extra_args are simply dropped. Only ctx,
+# temp, top-p, top-k and reasoning came through, which is why the tested settings for qwen 3.6 and
+# bonsai never applied.
+# Resolved from the runtime user's home rather than a literal /home/<name>, so the same launcher
+# works for any user without editing it.
+PROFILES_DIR="${OWV_PROFILES_DIR:-$OWV_HOME/Documents/llama_profiles}"
 
 # Ports identical to the working launchers, so bookmarks and workflows do not change.
 # The fork replaces the live launcher, so it takes these same ports. It refuses if one is
@@ -291,6 +310,7 @@ OWV_BIN_DIRS=(
     "$OWV_HOME/bin"
     "$OWV_HOME/.cargo/bin"
     "$OWV_HOME/llama.cpp/build/bin"
+    "$OWV_HOME/llama.cpp-ternary/build-ternary/bin"
     "$STRATA_DIR/engine"
     "$OWV_HOME/.strata/bin"
     "/usr/local/bin"
@@ -333,6 +353,92 @@ resolve_model() {
     die "no model found under the configured roots (set OWV_MODEL)"
 }
 
+# Profile name is the model id with / and : replaced by _, plus the gguf suffix: local/<Model>:gguf
+# becomes local_<Model>_gguf.json. Matching on the file name alone is not enough because a profile
+# can be named for the id while the file on disk differs, so both forms are tried.
+profile_for_model() {
+    local model="$1"
+    [[ -d "$PROFILES_DIR" ]] || return 1
+    local stem="$(basename "$model" | sed 's/\.gguf$//; s/[^A-Za-z0-9_.-]/_/g')"
+    local cand
+    for cand in "${PROFILES_DIR}/local_${stem}_gguf.json" "${PROFILES_DIR}/${stem}.json" "${PROFILES_DIR}/local_${stem}.json"; do
+        [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
+    done
+    return 1
+}
+
+# Reads a profile as data. Keys are mapped through a fixed table, so a value in a profile cannot be
+# executed by the shell; an unknown key is reported, not passed through.
+profile_json_field() {
+    "$FORK_PY" - "$1" "$2" <<'PYFIELD'
+import json, sys
+try:
+    raw = json.loads(open(sys.argv[1], encoding="utf-8").read())
+except (ValueError, OSError):
+    print(""); raise SystemExit(0)
+print(raw.get(sys.argv[2]) or "")
+PYFIELD
+}
+
+build_llama_args() {
+    local profile="${1:-}"
+    if [[ -z "$profile" ]]; then
+        printf '%s\n' --ctx-size "${OWV_CTX_SIZE:-256000}" --temp "${OWV_TEMPERATURE:-0.2}" \
+            --top-p "${OWV_TOP_P:-0.8}" --top-k "${OWV_TOP_K:-20}" --reasoning on
+        return 0
+    fi
+    "$FORK_PY" - "$profile" "${OWV_CTX_SIZE:-}" "${OWV_TEMPERATURE:-}" "${OWV_TOP_P:-}" "${OWV_TOP_K:-}" <<'PYARGS'
+import json, sys
+
+path, octx, otemp, otopp, otopk = sys.argv[1:6]
+try:
+    raw = json.loads(open(path, encoding="utf-8").read())
+except (ValueError, OSError):
+    raw = {}
+
+# An explicit OWV_ setting beats the profile; the profile beats the launcher default.
+flags = [
+    ("ngl", "--n-gpu-layers", "int"),
+    ("ctx_size", "--ctx-size", "int"),
+    ("batch", "--batch-size", "int"),
+    ("ubatch", "--ubatch-size", "int"),
+    ("threads", "--threads", "int"),
+    ("threads_batch", "--threads-batch", "int"),
+    ("cache_type_k", "--cache-type-k", "str"),
+    ("cache_type_v", "--cache-type-v", "str"),
+    ("parallel", "--parallel", "int"),
+    ("ncmoe", "--ncmoe", "int"),
+]
+args = []
+for key, flag, kind in flags:
+    value = raw.get(key)
+    if value in (None, "", 0, False):
+        continue
+    args += [flag, str(value)]
+# --flash-attn is a bare boolean in upstream llama.cpp but takes on|off|auto in the ternary
+# build, where a lone flag swallows the following token as its value. A profile that says true
+# therefore produced `--flash-attn --no-warmup` and the server refused to start. Emit the value.
+fa = raw.get("flash_attn")
+if fa is True:
+    args += ["--flash-attn", "on"]
+elif fa not in (None, "", False):
+    args += ["--flash-attn", str(fa)]
+for key, flag in (("cmoe", "--cmoe"), ("no_mmap", "--no-mmap"), ("no_warmup", "--no-warmup")):
+    if raw.get(key):
+        args.append(flag)
+if octx:
+    args += ["--ctx-size", octx]
+if otemp:
+    args += ["--temp", otemp]
+if otopp:
+    args += ["--top-p", otopp]
+if otopk:
+    args += ["--top-k", otopk]
+args += [str(a) for a in (raw.get("extra_args") or [])]
+print("\n".join(args))
+PYARGS
+}
+
 # -----------------------------
 # Backend decision, done by the fork's own module
 # -----------------------------
@@ -357,8 +463,38 @@ PYFORK
 build_params_json() {
     local backend="$1"
     if [[ "$backend" == "llamacpp" ]]; then
-        "$FORK_PY" -c 'import json,sys; print(json.dumps({"temperature": float(sys.argv[1]), "top_p": float(sys.argv[2]), "top_k": int(sys.argv[3]), "ctx_size": int(sys.argv[4])}))' \
-            "${OWV_TEMPERATURE:-0.2}" "${OWV_TOP_P:-0.8}" "${OWV_TOP_K:-20}" "${OWV_CTX_SIZE:-256000}"
+        # Report what is actually being passed. When a profile supplies ctx, cache type, batch and
+        # the generation values, the settings tab must show those and not the launcher defaults, or
+        # the tab reports numbers the process is not using.
+        "$FORK_PY" - "${PROFILE:-}" "${OWV_TEMPERATURE:-0.2}" "${OWV_TOP_P:-0.8}" "${OWV_TOP_K:-20}" "${OWV_CTX_SIZE:-256000}" <<'PYPARAMS_LLAMA'
+import json, sys
+
+profile, temp, top_p, top_k, ctx = sys.argv[1:6]
+params = {"temperature": float(temp), "top_p": float(top_p), "top_k": int(top_k), "ctx_size": int(ctx)}
+if profile:
+    try:
+        raw = json.loads(open(profile, encoding="utf-8").read())
+    except (ValueError, OSError):
+        raw = {}
+    for key, name in (("ctx_size", "ctx_size"), ("ngl", "n_gpu_layers"), ("batch", "batch_size"),
+                      ("ubatch", "ubatch_size"), ("threads", "threads"), ("threads_batch", "threads_batch"),
+                      ("cache_type_k", "cache_type_k"), ("cache_type_v", "cache_type_v"), ("flash_attn", "flash_attn")):
+        if raw.get(key) is not None:
+            params[name] = raw[key]
+    extra = [str(a) for a in (raw.get("extra_args") or [])]
+    for i, a in enumerate(extra):
+        if a in ("--temp", "--top-p", "--top-k", "--min-p") and i + 1 < len(extra):
+            # The flags in a profile are hyphenated (--top-k) while the reported keys are
+            # underscored (top_k). Indexing a fixed dict with a flag not in it raised KeyError on
+            # the first extra_args value, which is what threw during startup on the laptop.
+            name = {"--temp": "temperature", "--top-p": "top_p", "--top-k": "top_k", "--min-p": "min_p"}.get(a)
+            if name:
+                try:
+                    params[name] = float(extra[i + 1])
+                except ValueError:
+                    pass
+print(json.dumps(params, sort_keys=True))
+PYPARAMS_LLAMA
         return 0
     fi
     "$FORK_PY" - "$STRATA_CONFIG" <<'PYPARAMS'
@@ -420,7 +556,14 @@ PYHS
 [[ -d "$FORK_BACKEND/open_webui" ]] || die "fork backend dir missing: $FORK_BACKEND"
 
 MODEL="$(resolve_model)"
+PROFILE="$(profile_for_model "$MODEL" || true)"
 log "model: $MODEL"
+log "profiles dir: $PROFILES_DIR"
+if [[ -n "$PROFILE" ]]; then
+    log "profile for this model: $PROFILE"
+else
+    log "no profile matches this model; launcher defaults apply"
+fi
 log "fork python: $FORK_PY"
 log "data dir: $DATA_DIR"
 log "ports: webui $WEBUI_PORT, api $API_PORT, terminal $OPEN_TERMINAL_PORT, vision $VISION_PORT"
@@ -487,11 +630,22 @@ else
             BACKEND_PID=$!
             ;;
         llamacpp)
+            PROFILE="$(profile_for_model "$MODEL" || true)"
+            if [[ -n "$PROFILE" ]]; then
+                # A profile can name its own binary, and for the ternary builds that is the only
+                # path that works. An explicit OWV_LLAMA_BIN still wins so a deliberate override is
+                # not silently replaced, but a profile named for this model should not be ignored.
+                PROFILE_BIN="$(profile_json_field "$PROFILE" llama_bin)"
+                if [[ -n "$PROFILE_BIN" && -x "$PROFILE_BIN" && -z "${OWV_LLAMA_BIN:-}" ]]; then
+                    LLAMA_BIN="$PROFILE_BIN"
+                fi
+                log "profile applied: $PROFILE"
+            fi
             [[ -n "$LLAMA_BIN" ]] || die "llama.cpp binary not found. Set OWV_LLAMA_BIN or put llama-server on PATH."
+            mapfile -t LLAMA_ARGS < <(build_llama_args "$PROFILE")
             log "starting llama.cpp via $LLAMA_BIN"
             setsid "$LLAMA_BIN" -m "$MODEL" --host 127.0.0.1 --port "$API_PORT" \
-                --ctx-size "${OWV_CTX_SIZE:-256000}" --temp "${OWV_TEMPERATURE:-0.2}" \
-                --top-p "${OWV_TOP_P:-0.8}" --top-k "${OWV_TOP_K:-20}" --reasoning on \
+                "${LLAMA_ARGS[@]}" --reasoning on \
                 2>&1 | tee -a "$BACKEND_LOG" "$STOCK_LLAMA_LOG" &
             BACKEND_PID=$!
             ;;

@@ -43,6 +43,7 @@
 #   owv-kill.sh --ui-only        web UI only, engine and shared terminal left running
 #   owv-kill.sh --dry-run        print what would be stopped, change nothing
 #   owv-kill.sh --force          skip the inside-the-stack refusal
+#   owv-kill.sh --sudo           escalate for in-scope pids owned by root (s6/systemd services)
 #
 # Environment
 #   OWV_LAUNCHER_DIR   where these scripts live
@@ -76,6 +77,14 @@ mark() { printf '  %s %s\n' "$1" "$2"; }
 DRY_RUN=0
 FORCE=0
 UI_ONLY=0
+SUDO=0
+
+# The standing method on these machines is a blank password: passwd -d, so PAM accepts any input.
+# sudo -n fails because the policy still demands the authentication exchange, so pipe.
+run_priv() {
+    if [[ "$DRY_RUN" == 1 ]]; then say "  [dry-run] sudo $*"; return 0; fi
+    printf '\n' | sudo -S "$@" 2>/dev/null
+}
 SCOPES=()
 
 for arg in "$@"; do
@@ -86,6 +95,7 @@ for arg in "$@"; do
         --ui-only) UI_ONLY=1 ;;
         --dry-run|-n) DRY_RUN=1 ;;
         --force)  FORCE=1 ;;
+        --sudo)   SUDO=1 ;;
         -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) say "owv-kill: unknown option: $arg" >&2; exit 2 ;;
     esac
@@ -137,7 +147,12 @@ launcher_for_scope() {
 
 read_env() {
     local pid="$1"
-    [[ -r "/proc/$pid/environ" ]] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null
+    if [[ -r "/proc/$pid/environ" ]]; then tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null; return 0; fi
+    # A root-owned service cannot be read by an ordinary user, so a scope built only on environ
+    # silently excludes exactly the processes a user cannot kill either. With --sudo both halves are
+    # possible, and without it the script says so instead of reporting an empty scope.
+    [[ "$SUDO" == 1 ]] && { printf '\n' | sudo -S cat "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n'; return 0; }
+    return 1
 }
 
 ppid_of() {
@@ -174,7 +189,10 @@ matches_scope() {
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
     [[ "$cmd" == *"$code"* || "$cwd" == "$code" || "$cwd" == "$code"/* ]] && return 0
-    [[ -n "$3" ]] && read_env "$pid" | grep -qx "OWV_RUNTIME_DIR=$3"
+    [[ -n "$3" ]] && { read_env "$pid" | grep -qx "OWV_RUNTIME_DIR=$3" && return 0; }
+    # A service started by the s6 or systemd unit has no launcher and no cwd inside the code copy,
+    # but its cwd is the runtime dir it was told to use. That is scope evidence too.
+    [[ -n "$3" && "$cwd" == "$3"/* ]] && return 0
     return 1
 }
 
@@ -207,6 +225,9 @@ skip_reason() {
     if [[ "$UI_ONLY" == 1 ]]; then
         tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qiE 'strata|llama-server|open_terminal run' && { echo "engine/terminal, left running by --ui-only"; return; }
     fi
+    # A straggler vision worker is a child of the engine, not of the launcher, so it is only found
+    # through scope evidence. Report that instead of saying nothing.
+    if ! belongs_to_me "$pid" && [[ "$SUDO" == 0 ]]; then echo ""; return; fi
     echo ""
 }
 
@@ -216,6 +237,11 @@ kill_one() {
     local pid="$1" scope="$2" label="$3" reason
     [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]] && return 0
     [[ ! -d "/proc/$pid" ]] && return 0
+    # A defunct entry in the process list is already dead. It has no memory, no fds, and kill does
+    # nothing to it; it only disappears when its parent reaps it or init adopts and reaps it. Saying
+    # "killed" here is what made the earlier run look like it had failed.
+    state=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $1}')
+    [[ "$state" == "Z" ]] && { mark "skip" "$pid ($label): defunct, only its parent can reap it"; return 0; }
     [[ "$SEEN" == *" $pid "* ]] && return 0
     SEEN="$SEEN $pid "
     reason=$(skip_reason "$pid" "$scope")
@@ -224,7 +250,13 @@ kill_one() {
         return 0
     fi
     if ! belongs_to_me "$pid"; then
-        mark "skip" "$pid ($label): owned by $(stat -c '%U' "/proc/$pid" 2>/dev/null || echo '?')"
+        owner=$(stat -c '%U' "/proc/$pid" 2>/dev/null || echo '?')
+        if [[ "$SUDO" == 1 ]]; then
+            run_priv kill "$pid" && { mark "kill" "$pid ($label): owner $owner, via sudo"; return 0; }
+            mark "skip" "$pid ($label): owner $owner, sudo refused"
+        else
+            mark "skip" "$pid ($label): owned by $owner (in scope, but not killable without --sudo)"
+        fi
         return 0
     fi
     if [[ "$FORCE" == 1 && -n "$reason" ]]; then mark "force" "$pid ($label): $reason"; fi
@@ -295,7 +327,7 @@ in_scope() {
     local tree
     tree=" $(descendants "$launcher" | tr '\n' ' ') "
     [[ -n "$launcher" && "$tree" == *" $pid "* ]] && return 0
-    matches_scope "$pid" "$code"
+    matches_scope "$pid" "$code" "$runtime"
 }
 
     # 3. descendants and stragglers. The trap covers the launcher's own children, but a straggler
@@ -310,9 +342,10 @@ in_scope() {
     if [[ "$DRY_RUN" != 1 ]]; then
         for port in $(scope_ports "$scope"); do
             for pid in $(listener_pids "$port"); do
-                if matches_scope "$pid" "$code"; then
-                    [[ -d "/proc/$pid" ]] && run kill -9 "$pid" 2>/dev/null || true
-                    mark "kill" "$pid (hard, port $port)"
+                # Routed through kill_one so a holdout is not hard-killed outside the ownership
+                # rule. The port alone is not proof of scope, and it was killing whatever held it.
+                if matches_scope "$pid" "$code" "$runtime"; then
+                    kill_one "$pid" "$scope" "port $port"
                 else
                     mark "skip" "$pid (port $port): not this scope"
                 fi

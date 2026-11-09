@@ -23,6 +23,12 @@ alias owv-tmux="tmux new-session -d -s owv \"bash $OWV_LAUNCHER_DIR/owv.sh\""
 
 # stop
 alias kill-owv="bash $OWV_LAUNCHER_DIR/owv-kill.sh"
+# A second name for the same thing, because kill-owv can already be defined by the user's shell rc.
+# profile.d runs before .bashrc for a login shell and does not run at all for a non-login
+# interactive shell, so a packaged definition cannot be relied on to win. Measured on two machines
+# where kill-owv still resolved to a stock launcher script. owv-kill is not a name anything else
+# defines, so it is unambiguous.
+alias owv-kill="bash $OWV_LAUNCHER_DIR/owv-kill.sh"
 alias kill-owv-dirty="bash $OWV_LAUNCHER_DIR/owv-kill.sh --force"
 alias kill-owv-ui="bash $OWV_LAUNCHER_DIR/owv-kill.sh --ui-only"
 alias restart-owv="bash $OWV_LAUNCHER_DIR/owv-kill.sh && bash $OWV_LAUNCHER_DIR/owv.sh"

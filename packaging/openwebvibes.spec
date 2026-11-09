@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.3
+Version:        1.1.4
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -80,6 +80,30 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.4-1.rc1
+- Loop guard: the shape detector reports every shape a tool call can arrive in, not only the template
+  form. A call written as name(arg) on its own line, or an <invoke> block inside a code fence, was read
+  as a formatting miss because the name was declared, so the turn answered with the markup itself and
+  nothing executed. Both shapes now force one bounded re-request, still capped by shapeRetries and still
+  refused after items have streamed.
+- Launcher: DATA_DIR defaults to the fork's own data dir and is exported. It previously defaulted to the
+  stock instance's directory, so a machine that had just run sync-owv read a different database than the
+  one the alias wrote: history was intact, the model list was not.
+- Launcher: profiles are read from ~/Documents/llama_profiles through a fixed key-to-flag table, so ngl,
+  cache type, batch, threads, flash attention and extra_args apply instead of being dropped, and a
+  profile's own llama_bin is honoured when no explicit override is set. Paths resolve from the runtime
+  user's home rather than a literal /home/<name>.
+- Launcher: --flash-attn is emitted with a value. The ternary build takes on|off|auto, so a bare boolean
+  flag consumed the next token and the server refused to start. The startup params report also no longer
+  indexes a fixed dict with a hyphenated flag name, which raised KeyError on the first extra_args value.
+- kill-owv: the port-holdout sweep goes through the same ownership and scope checks as the rest of the
+  script; a port alone is not proof of scope. Scope now accepts the runtime dir as evidence, which is the
+  only evidence available for an s6 or systemd started service, and an in-scope process owned by root is
+  reported as needing --sudo instead of being silently skipped. Zombies are reported as unkillable rather
+  than attempted.
+- Aliases: the packaged kill is also available as owv-kill, because a user's shell rc can already define
+  kill-owv and profile.d cannot be relied on to win that name.
+
 * Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.3-1.rc1
 - New packaging/ensure-open-terminal.sh: detects open_terminal by import against the interpreter the
   launcher will use, then installs it once (uv first because the fleet venvs carry no pip, pip with the

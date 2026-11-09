@@ -314,6 +314,38 @@ def steering_note(hit: dict, tool_name: str = "") -> str:
 
 
 TOOL_MARKUP = re.compile(r"<tool_call>\s*<function=([A-Za-z0-9_]+)>\s*(.*?)</function>\s*</tool_call>", re.S)
+INVOKE_MARKUP = re.compile(r"<invoke\s+name=\"([A-Za-z0-9_]+)\"", re.S)
+FENCED_BLOCK = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+PROSE_CALL = re.compile(r"(?:^|\n)[ \t]*([A-Za-z_][A-Za-z0-9_]{2,})\(", re.S)
+
+
+def text_tool_call_shapes(text: str, available: set[str] | None = None) -> list[dict]:
+    """Every shape a tool call can arrive in as message text.
+
+    The guard previously recognised exactly one shape, the template form. That is not the
+    failure that keeps happening: a call written as `name(arg)` on its own line, or an
+    <invoke> block placed inside a code fence, is never parsed either, and neither produced a
+    hit because no name was undeclared. The name was declared and the shape was unreadable,
+    so the turn closed as a text answer.
+
+    Shapes are recorded separately from the name check because the two need different
+    responses: an undeclared name is a capability miss, an unreadable shape is a formatting
+    miss, and both are worth one re-request.
+    """
+    text = str(text or "")
+    shapes = []
+    for m in TOOL_MARKUP.finditer(text):
+        shapes.append({"name": m.group(1), "shape": "template_markup"})
+    for m in INVOKE_MARKUP.finditer(text):
+        shapes.append({"name": m.group(1), "shape": "fenced_or_unwrapped_invoke"})
+    # A call written as prose is only a call when the name is one the request declared, and
+    # when it stands on its own line. `min(1, 2)` inside a sentence is not a tool call, so the
+    # two conditions are what keep this from flagging ordinary text.
+    for m in PROSE_CALL.finditer(text):
+        name = m.group(1)
+        if available is None or name in available:
+            shapes.append({"name": name, "shape": "prose_call"})
+    return shapes
 
 
 def text_tool_markup(text: str) -> list[dict]:
@@ -341,9 +373,14 @@ def text_tool_markup_issues(text: str, available: set[str] | None = None) -> dic
     either one.
     """
     hits = text_tool_markup(text)
-    unknown = sorted({h["name"] for h in hits if available is not None and h["name"] not in available})
+    shapes = text_tool_call_shapes(text, available)
+    unknown = sorted({h["name"] for h in shapes if available is not None and h["name"] not in available})
+    # Declared names in a shape the parser cannot read. This is the half that was missing:
+    # the name existed, so the old rule called it a formatting miss and stopped there, while
+    # nothing executed and the turn answered with the markup itself.
+    unparsed = sorted({h["name"] for h in shapes if h["shape"] != "template_markup"})
     unclosed = str(text or "").count("<tool_call>") > str(text or "").count("</tool_call>")
-    return {"markup": hits, "unknown": unknown, "unclosed": unclosed}
+    return {"markup": shapes, "unknown": unknown, "unparsed": unparsed, "unclosed": unclosed}
 
 def pairing_safe_insert_index(messages: list[dict]) -> int:
     """Where a note can be inserted without breaking tool call/output pairing.

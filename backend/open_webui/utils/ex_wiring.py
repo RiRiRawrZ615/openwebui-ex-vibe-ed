@@ -356,7 +356,7 @@ def loop_check(output_items: list[dict], messages: list[dict], settings: dict, a
             markup = text_tool_markup_issues(str(message.get("content")), available_tools)
             break
     if markup.get("markup") and hit.get("verdict") == "clean":
-        names = sorted({h["name"] for h in markup["markup"]})
+        names = sorted(set(markup.get("unknown") or []) | set(markup.get("unparsed") or []))
         # Single sourced wording, so the loop guard and the shape retry cannot disagree.
         note = corrective_note(settings, names)
         hit = {**hit, "verdict": "markup", "reason": f"tool markup in message content: {names}", "action": "correct_format"}
@@ -377,14 +377,18 @@ def shape_retry_decision(settings: dict, markup: dict, *, attempt: int = 1, stre
     so the block comes back as text, and the turn answers with markup instead of running a tool.
     Detection alone is not the fix: the turn has to be re-run with the corrective note attached.
 
-    Only an undeclared name counts. Markup naming a declared tool is a formatting miss, and the
-    note there is enough; re-running a request that would have worked is not a correction.
+    Two classes now count. An undeclared name is a capability miss. A declared name written in a
+    shape the parser cannot read is a formatting miss, and the earlier rule refused to re-request
+    for it, which is what kept producing a text answer here: the name was real, the call was
+    written as prose or inside a fence, nothing executed, and the note alone did not change the
+    shape that came back. A formatting miss that produces no execution still needs one
+    re-request, bounded by the same shapeRetries budget.
 
     The partial output rule still applies. Text already streamed cannot be replayed without
     appending it twice, so a shape retry after streaming is refused here and reported as such.
     """
     settings = settings or {}
-    names = sorted(set(markup.get("unknown") or []))
+    names = sorted(set(markup.get("unknown") or []) | set(markup.get("unparsed") or []))
     if not names:
         return {"retry": False, "names": [], "note": "", "reason": "no undeclared name to correct"}
 
