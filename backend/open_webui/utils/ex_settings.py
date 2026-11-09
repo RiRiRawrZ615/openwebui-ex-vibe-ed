@@ -19,6 +19,10 @@ DEFAULTS = {
     "journalWindow": 1,          # turns of reasoning kept in the prompt head
     "toolOutputWindow": 3,       # tool outputs kept in full, counted from the end
     "toolOutputMaxChars": 1500,  # only oversized bodies get journalled
+    # Two ceilings the window was missing: one for a single read, one for the total bytes the
+    # tool window may hold. Both are reported when reached instead of applied silently.
+    "readMaxChars": 8000,
+    "toolOutputWindowMaxChars": 12000,
     "loopGuard": True,           # detection + steering note at iteration boundary
     "loopThreshold": 3,
     "liveStats": True,           # tok/s during generation

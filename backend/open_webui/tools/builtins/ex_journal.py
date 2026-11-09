@@ -21,11 +21,12 @@ from fastapi import Request
 from pydantic import BaseModel, Field
 
 from open_webui.utils.chat_id import is_saved_chat_id
+from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_journal import (
     journal_index,
     journal_path,
     read_journal,
-)
+    DEFAULT_READ_MAX_CHARS)
 from open_webui.utils.ex_reconstruct import reconstruct_path
 
 log = logging.getLogger(__name__)
@@ -119,7 +120,17 @@ class Tools:
         path = journal_path(data_dir, chat)
         if not path.exists():
             return f"no journal file for {chat}"
-        return read_journal(path, entry_id=entry, needle=needle, limit=limit)
+        # Bounded, so a read cannot return a whole window. The ceiling comes from settings so
+        # it can be raised, and when it is reached the truncation is stated in the text rather
+        # than left silent.
+        budget = DEFAULT_READ_MAX_CHARS
+        try:
+            budget = int((resolve_ex_settings(getattr(__request__, "user", None)) or {}).get(
+                "readMaxChars") or DEFAULT_READ_MAX_CHARS)
+        except Exception:
+            pass
+        return read_journal(path, entry_id=entry, needle=needle, limit=limit,
+                            max_chars=budget)
 
     async def reconstruct(self, chat_id: str = "", __request__: Request = None) -> str:
         """Read the reconstruction file for this chat.

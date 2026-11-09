@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import difflib
 import re
 from typing import Any
 
@@ -355,6 +356,34 @@ def text_tool_call_shapes(text: str, available: set[str] | None = None) -> list[
     return shapes
 
 
+def resolve_near_miss(name: str, available: set[str] | None, *, cutoff: float = 0.62) -> str | None:
+    """One plausible declared tool for a mistyped name, or None.
+
+    A single candidate is a correction; two or more is a guess and is left alone. Scored on the
+    whole name and on underscore-separated parts, because a name like replace_file_path differs
+    from replace_file_content by one word, and a character-ratio test alone can fall below the
+    cutoff when the two names differ in length.
+    """
+    if not available or name in available:
+        return None
+    scores: list[tuple[float, str]] = []
+    for cand in sorted(available):
+        ratio = difflib.SequenceMatcher(None, name, cand).ratio()
+        a, b = name.split("_"), cand.split("_")
+        shared = sum(1 for x, y in zip(a, b) if x == y)
+        parts = shared / max(len(a), len(b)) if a and b else 0.0
+        scores.append((max(ratio, parts), cand))
+    if not scores:
+        return None
+    scores.sort(reverse=True)
+    best, best_name = scores[0]
+    if best < cutoff:
+        return None
+    if [c for s, c in scores[1:] if s == best]:
+        return None
+    return best_name
+
+
 def text_tool_markup(text: str) -> list[dict]:
     """Find tool markup that was emitted as message content instead of a structured call.
 
@@ -399,11 +428,17 @@ def text_tool_markup_issues(text: str, available: set[str] | None = None) -> dic
         span = shape.get("span")
         if span:
             stripped = stripped[:span[0]] + "\n" + stripped[span[1]:]
+    # The third case the decision needs. A name the request did not declare is a capability
+    # miss, but a name that resolves to exactly one declared tool is a typo, and the two want
+    # different responses: the typo can be corrected in place, the capability miss cannot.
+    corrected = {n: resolve_near_miss(n, available) for n in unknown}
+    corrected = {k: v for k, v in corrected.items() if v}
     return {
         "markup": shapes,
         "unknown": unknown,
         "unparsed": unparsed,
         "unclosed": unclosed,
+        "corrected": corrected,
         "markup_only": bool(shapes) and not stripped.strip(),
     }
 

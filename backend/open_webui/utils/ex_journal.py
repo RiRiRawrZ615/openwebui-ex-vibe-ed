@@ -45,6 +45,12 @@ DEFAULT_TOOL_OUTPUT_MAX_CHARS = 1500
 
 SUMMARY_CHARS = 120
 
+# A read with no ceiling returns a whole window. That is how one call came back at
+# 725,805 characters: the window bounds how many entries, not how large they may be, so
+# the read needs its own budget, and an output kept inside the tool window needs one too.
+DEFAULT_READ_MAX_CHARS = 8000
+DEFAULT_TOOL_OUTPUT_WINDOW_MAX_CHARS = 12000
+
 
 def summarise(text: str, limit: int = SUMMARY_CHARS) -> str:
     """Cheap deterministic summary: first non-empty line, clipped. No model call."""
@@ -103,6 +109,7 @@ def partition(
     reasoning_window: int = DEFAULT_REASONING_WINDOW,
     tool_output_window: int = DEFAULT_TOOL_OUTPUT_WINDOW,
     tool_output_max_chars: int = DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+    tool_output_window_max_chars: int = DEFAULT_TOOL_OUTPUT_WINDOW_MAX_CHARS,
     base_entry_id: int = 0,
     journal_lookup: dict[str, list[dict]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
@@ -119,6 +126,9 @@ def partition(
     model_messages: list[dict] = []
     entries: list[dict] = []
     next_entry_id = base_entry_id
+    # Bytes actually spent by outputs kept in full inside the tool window. The window is a
+    # count, so without a running total the largest outputs in it are unbounded.
+    window_used = 0
 
     assistant_positions = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
     if assistant_positions:
@@ -224,28 +234,34 @@ def partition(
 
             if item_type == "function_call_output":
                 text = extract_tool_output_text(item)
-                # Only swap oversized bodies, and only outside the tool window. Pairing is
-                # preserved because call_id is untouched.
+                # Pairing is preserved either way, because call_id is untouched. Two ceilings
+                # apply now: a per-item ceiling, and a total for the window. Before this the
+                # window bounded count only, so an in-window body of any size stayed verbatim,
+                # which is how a single output reached 928 KB in stored history.
                 inside_tool_window = first_kept_tool is not None and (i, pos) >= first_kept_tool
-                if len(text) > tool_output_max_chars and not inside_tool_window:
-                    if journal_lookup:
-                        already = [
-                            e
-                            for e in journal_lookup.get(message.get("id"), [])
-                            if e["kind"] == "tool_output" and e.get("call_id") == item.get("call_id")
-                        ]
-                        if already:
-                            new_output.append(
-                                {
-                                    "type": "message",
-                                    "content": [{"type": "output_text", "text": _pointer(already[0]["id"], "tool_output", turn_number, summarise(text), len(text))}],
-                                }
-                            )
-                            continue
+                oversized = len(text) > tool_output_max_chars
+                over_budget = inside_tool_window and (
+                    window_used + len(text) > tool_output_window_max_chars
+                )
+                if not (oversized or over_budget):
+                    if inside_tool_window:
+                        window_used += len(text)
+                    new_output.append(item)
+                    continue
+
+                already = [
+                    e
+                    for e in (journal_lookup or {}).get(message.get("id"), [])
+                    if e["kind"] == "tool_output" and e.get("call_id") == item.get("call_id")
+                ]
+                if already:
+                    entry_id = already[0]["id"]
+                else:
                     next_entry_id += 1
+                    entry_id = next_entry_id
                     entries.append(
                         {
-                            "id": next_entry_id,
+                            "id": entry_id,
                             "chat_id": chat_id,
                             "turn": turn_number,
                             "message_id": message.get("id"),
@@ -256,10 +272,30 @@ def partition(
                             "text": text,
                         }
                     )
-                    kept = dict(item)
-                    kept["output"] = [{"type": "input_text", "text": _pointer(next_entry_id, "tool_output", turn_number, summarise(text), len(text))}]
-                    new_output.append(kept)
-                    continue
+
+                ptr = _pointer(entry_id, "tool_output", turn_number, summarise(text), len(text))
+                if inside_tool_window:
+                    # The pointer has to name text that is actually stored, which is why an
+                    # in-window output is journalled too. The model copy keeps the
+                    # function_call_output shape with a clipped excerpt, so pairing survives and
+                    # the item stays bounded.
+                    body = f"{ptr}\n{text[:tool_output_max_chars]}..."
+                    window_used += len(body)
+                    new_output.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": item.get("call_id"),
+                            "output": [{"type": "input_text", "text": body}],
+                        }
+                    )
+                else:
+                    new_output.append(
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": ptr}],
+                        }
+                    )
+                continue
                 new_output.append(item)
                 continue
 
@@ -313,7 +349,8 @@ def append_journal(path: Path | str, entries: list[dict], chat_id: str, title: s
     return p
 
 
-def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str = "", limit: int = 12) -> str:
+def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str = "",
+               limit: int = 12, max_chars: int = DEFAULT_READ_MAX_CHARS) -> str:
     """Read one entry, or focus windows around a needle. Returns text, not a page dump."""
     p = Path(path)
     if not p.exists():
@@ -327,19 +364,37 @@ def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str =
         # journal that holds nothing must not look like a successful read.
         return f"[journal has no entries yet: {p}]"
 
+    budget = int(max_chars) if max_chars else 0
+
+    def clip(block: str, room: int) -> str:
+        block = block.strip()
+        if room <= 0 or len(block) <= room:
+            return block
+        return block[:room] + f"\n[clipped at {room} of {len(block)} chars]"
+
     if entry_id is not None:
         for s in sections:
             if s.startswith(f"## entry {entry_id} "):
-                return s.strip()
+                return clip(s, budget)
         return f"[entry {entry_id} not found in {p} ({len(sections)} entries)]"
 
-    if not needle:
-        return "\n\n".join(s.strip() for s in sections[-limit:])
-
-    hits = [s.strip() for s in sections if needle.lower() in s.lower()]
-    if not hits:
+    picked = sections[-limit:] if not needle else [s for s in sections if needle.lower() in s.lower()][:limit]
+    if not picked:
         return f"[no journal match for {needle!r} in {len(sections)} entries]"
-    return "\n\n".join(hits[:limit])
+
+    # The budget is reported, not applied silently. A read that dropped entries without saying
+    # so would read as a complete answer, which is the failure mode here.
+    out, used, skipped = [], 0, 0
+    for s in picked:
+        if budget and used >= budget:
+            skipped += 1
+            continue
+        piece = clip(s, (budget - used) if budget else len(s))
+        out.append(piece)
+        used += len(piece)
+    if skipped:
+        out.append(f"[read budget {budget} chars reached; {skipped} of {len(picked)} entries not shown]")
+    return "\n\n".join(out)
 
 
 def entry_ids_by_message(path: Path | str) -> dict[str, list[dict]]:
@@ -353,7 +408,11 @@ def entry_ids_by_message(path: Path | str) -> dict[str, list[dict]]:
     for section in re.split(r"\n(?=## entry )", raw):
         if not section.strip().startswith("## entry "):
             continue
-        head = re.match(r"^## entry (\d+) \| turn (\d+) \| (\w+)$", section.strip())
+        # The header is one line and a section carries body text after it, so an anchored
+        # match against the whole section never fires. Measured: this lookup came back empty on
+        # a journal holding 1399 sections over 266 distinct entries, which is what let entries
+        # be re-appended every turn. Match the header line alone.
+        head = re.match(r"^## entry (\d+) \| turn (\d+) \| (\w+)$", section.strip().splitlines()[0])
         msg = re.search(r"^message_id: (\S+)$", section, re.M)
         call = re.search(r"^call_id: (\S+)$", section, re.M)
         if head and msg:

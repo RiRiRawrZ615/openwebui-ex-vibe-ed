@@ -334,6 +334,7 @@ def journal_window(
         reasoning_window=settings["journalWindow"],
         tool_output_window=settings["toolOutputWindow"],
         tool_output_max_chars=settings["toolOutputMaxChars"],
+        tool_output_window_max_chars=settings.get("toolOutputWindowMaxChars", 12000),
         base_entry_id=base_entry_id,
         journal_lookup=lookup,
     )
@@ -389,8 +390,10 @@ def shape_retry_decision(settings: dict, markup: dict, *, attempt: int = 1, stre
     """
     settings = settings or {}
     names = sorted(set(markup.get("unknown") or []) | set(markup.get("unparsed") or []))
+    corrections = markup.get("corrected") or {}
     if not names:
-        return {"retry": False, "names": [], "note": "", "reason": "no undeclared name to correct"}
+        return {"retry": False, "names": [], "note": "", "corrections": {},
+                "reason": "no undeclared name to correct"}
 
     verdict = decide(
         "tool name the request did not declare",
@@ -404,12 +407,19 @@ def shape_retry_decision(settings: dict, markup: dict, *, attempt: int = 1, stre
     # nothing to duplicate and the replay is the correct response. That was the case being refused.
     partial = bool(streamed) and not markup.get("markup_only")
     permitted = retry_permitted(verdict, partial_output=partial)
+    note = corrective_note(settings, names)
+    # A name that resolves to exactly one declared tool is a typo, not a capability miss, so
+    # the note can name the tool that was meant. More than one candidate stays a guess, and the
+    # note corrects the shape only.
+    if corrections:
+        note += " " + "; ".join(f"{k} -> {v}" for k, v in sorted(corrections.items()))
     return {
         "retry": bool(permitted.get("permitted")) and bool(settings.get("autoRetry", True)),
         "names": names,
-        "note": corrective_note(settings, names),
+        "note": note,
         "reason": permitted.get("reason", ""),
-        "class": verdict.get("class"),
+        "class": "typo" if corrections else verdict.get("class"),
+        "corrections": corrections,
     }
 
 
@@ -698,7 +708,10 @@ def prompt_gate(
 
     # 4. If the projection still cannot fit, stop before the engine does. An over-window request is
     #    a hard failure, and a local refusal says what happened in terms the user can act on.
-    if settings.get("enforceCeiling", True) and projected + max(fit, ANSWER_ROOM_MIN) > ceiling:
+    # A fit of zero is not a pass. It means the prompt left no room for an answer, so the request
+    # that goes out could not produce one. That is the shape this chat kept hitting: the prompt
+    # landed just under the ceiling, the fit came out 0, and the engine refused anyway.
+    if settings.get("enforceCeiling", True) and (fit <= 0 or projected + max(fit, ANSWER_ROOM_MIN) > ceiling):
         report["refused"] = True
         report["over_by"] = projected + max(fit, ANSWER_ROOM_MIN) - ceiling
         log.warning(

@@ -119,6 +119,25 @@ def message_tokens(message: dict) -> int:
                     total += 850
             elif isinstance(part, str):
                 total += estimate_tokens(part)
+    # Output items are part of what the engine counts. A function_call_output body and a
+    # reasoning item both reach the engine as text whenever they are kept, so a count that
+    # looks only at content reports a message as nearly free. Measured on the chat that was
+    # refused: 17,885 counted here against 1,592,391 characters of tool text inside the same
+    # messages. The gate said the request fit and the engine refused it.
+    for item in message.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        total += 4
+        for key in ("output", "content", "summary"):
+            parts = item.get(key) or []
+            if isinstance(parts, str):
+                total += estimate_tokens(parts)
+                continue
+            for part in parts:
+                if isinstance(part, dict):
+                    total += estimate_tokens(part.get("text") or "")
+                elif isinstance(part, str):
+                    total += estimate_tokens(part)
     for key in ("tool_calls", "tool_call_id", "name"):
         if message.get(key):
             try:
