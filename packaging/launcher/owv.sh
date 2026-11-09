@@ -565,6 +565,36 @@ if [[ "$OWV_TERMINAL_ENABLED" == "1" ]]; then
     if [[ -d "$UV_CACHE" ]]; then
         TERM_DIR="$(find "$UV_CACHE"/archive-v0 -maxdepth 2 -type d -name open_terminal 2>/dev/null | head -1 || true)"
     fi
+
+    # Then the honest test: can the interpreter the fork actually runs import it. The packaged build
+    # is noarch and never creates an environment, so on a machine installed from the RPM the cache is
+    # empty and `uvx --offline` resolves to nothing. That is the case where the terminal never comes
+    # up, the health window expires, and the log reads like a dead port instead of a missing package.
+    # A venv cannot see ~/.local site-packages, so checking the import is the only reliable check.
+    TERM_IMPORT_OK=0
+    if [[ -z "$TERM_DIR" ]] && "$FORK_PY" -c 'import open_terminal' >/dev/null 2>&1; then
+        TERM_IMPORT_OK=1
+    fi
+
+    if [[ -z "$TERM_DIR" && "$TERM_IMPORT_OK" != "1" && "${OWV_TERMINAL_AUTOINSTALL:-1}" == "1" ]]; then
+        # One attempt, no retry loop. uv-first because the venvs in this fleet are uv-created and
+        # carry no pip; pip with the PEP 668 flag is the fallback for a system interpreter.
+        UV_BIN="$(command -v uv || true)"
+        [[ -z "$UV_BIN" && -x "$OWV_HOME/.local/bin/uv" ]] && UV_BIN="$OWV_HOME/.local/bin/uv"
+        if [[ -n "$UV_BIN" ]]; then
+            log "open-terminal not importable by $FORK_PY; attempting one install with uv"
+            "$UV_BIN" pip install --python "$FORK_PY" open-terminal >> "$TERMINAL_LOG" 2>&1 \
+                && log "open-terminal installed into the fork environment" \
+                || warn "open-terminal install failed; see $TERMINAL_LOG"
+        elif command -v pip >/dev/null 2>&1 || "$FORK_PY" -m pip --version >/dev/null 2>&1; then
+            log "open-terminal not importable and no uv; attempting pip install"
+            "$FORK_PY" -m pip install --break-system-packages open-terminal >> "$TERMINAL_LOG" 2>&1 \
+                && log "open-terminal installed with pip" \
+                || warn "open-terminal pip install failed; see $TERMINAL_LOG"
+        fi
+        "$FORK_PY" -c 'import open_terminal' >/dev/null 2>&1 && TERM_IMPORT_OK=1
+    fi
+
     if [[ -n "$TERM_DIR" ]]; then
         log "open-terminal resolved from the uv cache, no network needed"
         # PYTHONPATH must be the PARENT of the package directory. The earlier value pointed at
@@ -573,14 +603,19 @@ if [[ "$OWV_TERMINAL_ENABLED" == "1" ]]; then
             --host 127.0.0.1 --port "$OPEN_TERMINAL_PORT" --cwd "${OWV_TERMINAL_CWD:-$OWV_HOME/Documents/AI_Output}" \
             > "$TERMINAL_LOG" 2>&1 &
         TERMINAL_PID=$!
+    elif [[ "$TERM_IMPORT_OK" == "1" ]]; then
+        setsid env OPEN_TERMINAL_API_KEY="$(cat "$KEY_FILE")" "$FORK_PY" -m open_terminal run \
+            --host 127.0.0.1 --port "$OPEN_TERMINAL_PORT" --cwd "${OWV_TERMINAL_CWD:-$OWV_HOME/Documents/AI_Output}" \
+            > "$TERMINAL_LOG" 2>&1 &
+        TERMINAL_PID=$!
     elif command -v uvx >/dev/null 2>&1; then
         warn "open-terminal is not in the uv cache; this start needs network and may fail offline"
-        setsid env OPEN_TERMINAL_API_KEY="$(cat "$KEY_FILE")" uvx --offline --python 3.11 open-terminal@latest run \
+        setsid env OPEN_TERMINAL_API_KEY="$(cat "$KEY_FILE")" uvx --python 3.11 open-terminal@latest run \
             --host 127.0.0.1 --port "$OPEN_TERMINAL_PORT" --cwd "${OWV_TERMINAL_CWD:-$OWV_HOME/Documents/AI_Output}" \
             > "$TERMINAL_LOG" 2>&1 &
         TERMINAL_PID=$!
     else
-        warn "no cached open-terminal and no uvx; Open Terminal not started. Fork runs without it."
+        warn "open-terminal is not importable, not cached, and could not be installed. Fork runs without it."
         TERMINAL_PID=""
     fi
 
@@ -591,9 +626,9 @@ if [[ "$OWV_TERMINAL_ENABLED" == "1" ]]; then
             kill -0 "$TERMINAL_PID" 2>/dev/null || break
             sleep 1
         done
-        curl -fsS --max-time 1 "http://127.0.0.1:$OPEN_TERMINAL_PORT/health" >/dev/null 2>&1 \
+        curl -fsS --max-time 2 "http://127.0.0.1:$OPEN_TERMINAL_PORT/health" >/dev/null 2>&1 \
             && log "Open Terminal ready on http://127.0.0.1:$OPEN_TERMINAL_PORT" \
-            || warn "Open Terminal did not become healthy; fork continues without it"
+            || warn "Open Terminal did not become healthy on $OPEN_TERMINAL_PORT; fork continues without it. Check $TERMINAL_LOG"
     fi
 fi
 

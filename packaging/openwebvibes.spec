@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.2
+Version:        1.1.3
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -45,6 +45,7 @@ install -m 755 packaging/launcher/owv-kill.sh "%{buildroot}/usr/lib/openwebvibes
 install -m 755 packaging/launcher/owv-aliases.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-aliases.sh"
 install -m 755 packaging/launcher/owv-status.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-status.sh"
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
+install -m 755 packaging/ensure-open-terminal.sh "%{buildroot}/usr/lib/openwebvibes/ensure-open-terminal.sh"
 ln -s ../lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
 
 install -m 644 packaging/etc/openwebvibes/owv.conf "%{buildroot}/etc/openwebvibes/owv.conf"
@@ -59,6 +60,12 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 # Setup tab; it only decides whether the setup workflow auto-runs.
 /usr/lib/openwebvibes/install-detect.sh > /var/lib/openwebvibes/install-report.json 2>/dev/null || true
 
+# Open Terminal is not a package dependency, so a fresh machine gets the fork code with nothing to
+# start: empty uv cache, no importable module, health window expires, launcher continues without it.
+# Detect against the interpreter that will run it and install once if absent. Non-fatal, because an
+# offline install must not fail the whole package.
+/usr/lib/openwebvibes/ensure-open-terminal.sh > /var/lib/openwebvibes/open-terminal-report.json 2>/dev/null || true
+
 %files
 /usr/lib/openwebvibes
 /usr/bin/owv
@@ -68,6 +75,16 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.3-1.rc1
+- New packaging/ensure-open-terminal.sh: detects open_terminal by import against the interpreter the
+  launcher will use, then installs it once (uv first because the fleet venvs carry no pip, pip with the
+  PEP 668 flag as fallback). Called from %post and from the launcher's terminal stage.
+- Launcher terminal resolution order is now cache, import, install, uvx. Previously a machine with an
+  empty cache fell to `uvx --offline`, which resolves to nothing, so the terminal never started and the
+  health timeout read as a dead port. A venv cannot see ~/.local site-packages, which is why the check
+  is an import and not a file lookup.
+- The health failure now names the port and the log file instead of warning generically.
+
 * Sun Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.2-1.rc1
 - Journal tool registered in the builtins manifest with index, read and reconstruct, so the pointer
   the prompt prints now resolves to a callable tool.
