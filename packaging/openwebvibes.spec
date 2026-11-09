@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.4
+Version:        1.1.5
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -80,6 +80,21 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.5-1.rc1
+- Context gate: the count now includes the text inside message output items. A count that looked
+  only at content reported a chat as 17,885 tokens while the engine counted 398,702 for the same
+  request, so the gate said the prompt fit and the engine refused it with nothing trimmed.
+- Journal: the entry lookup matches the header line, which is what dedupe depends on. Anchored
+  against a whole section it never fired, so entries were re-appended every turn (127 sections
+  over 52 distinct ids on one chat). Reads now have a budget, and the truncation is reported in
+  the text rather than left silent.
+- Tool window: bounded by size as well as by count. Outputs inside the window were kept verbatim
+  at any size, which is how a single output reached 928 KB. An in-window output is now journalled
+  so the pointer names text that exists, and the window carries a byte total.
+- Loop guard: an undeclared name that resolves to exactly one declared tool is reported as a
+  correction instead of shipped as text. One candidate is a correction, two or more stays a guess.
+  A fit of zero is treated as a refusal, since a prompt that leaves no room for an answer cannot
+  produce one.
 * Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.4-1.rc1
 - Loop guard: the shape detector reports every shape a tool call can arrive in, not only the template
   form. A call written as name(arg) on its own line, or an <invoke> block inside a code fence, was read
