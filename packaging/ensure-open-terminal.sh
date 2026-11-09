@@ -18,26 +18,29 @@
 
 set -Euo pipefail
 
+# Every variable that can arrive unset from %post or from a plain shell gets an explicit default.
+# Under `set -u`, a bare test on an unset variable ends the script before it can report anything,
+# which is how the first version of this file exited 1 with no output on lp10.
 state_dir="${OWV_STATE_DIR:-/var/lib/openwebvibes}"
-mkdir -p "$state_dir" 2>/dev/null || true
-log_file="$state_dir/open-terminal-install.log"
+autoinstall="${OWV_TERMINAL_AUTOINSTALL:-1}"
+log_file="${OWV_TERMINAL_INSTALL_LOG:-$state_dir/open-terminal-install.log}"
 
 # Running from %post means root, and a --user install there lands in /root/.local, which the fork
 # will never import. So the two entry points get different targets: a user run uses the interpreter
 # the launcher will run, a root run uses the system interpreter and leaves the per-user environment
 # to the launcher, which completes the install at first start with the right permissions.
 if [ "$(id -u)" -eq 0 ]; then
-    runtime_python="$(command -v python3 || true)"
     as_root=1
+    runtime_python="$(command -v python3 || true)"
 else
+    as_root=0
     runtime_python="${OWV_PYTHON:-/usr/lib/openwebvibes/.venv/bin/python}"
     if [ ! -x "$runtime_python" ]; then
         runtime_python="$(command -v python3 || true)"
     fi
-    as_root=0
 fi
 
-[ -n "$OWV_TERMINAL_AUTOINSTALL" ] && autoinstall="$OWV_TERMINAL_AUTOINSTALL" || autoinstall=1
+mkdir -p "$state_dir" 2>/dev/null || true
 
 status="unknown"
 route="none"
@@ -50,7 +53,9 @@ elif [ "$autoinstall" != "1" ]; then
     route="skipped (autoinstall off)"
 else
     uv="$(command -v uv || true)"
-    [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ] && uv="$HOME/.local/bin/uv"
+    if [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ]; then
+        uv="$HOME/.local/bin/uv"
+    fi
 
     if [ -n "$uv" ] && [ -n "$runtime_python" ]; then
         route="uv pip install --python $runtime_python"
@@ -59,22 +64,22 @@ else
         else
             status="failed"
         fi
-    elif [ -n "$runtime_python" ]; then
+    elif [ -n "$runtime_python" ] && "$runtime_python" -m pip --version >/dev/null 2>&1; then
         if [ "$as_root" -eq 1 ]; then
             route="pip install --break-system-packages (system)"
+            pip_flags=()
         else
             route="pip install --user --break-system-packages"
+            pip_flags=(--user)
         fi
-        pip_flags=()
-        [ "$as_root" -eq 0 ] && pip_flags=(--user)
-        if "$runtime_python" -m pip install "${pip_flags[@]}" --break-system-packages open-terminal >>"$log_file" 2>&1; then
+        if "$runtime_python" -m pip install ${pip_flags[@]+"${pip_flags[@]}"} --break-system-packages open-terminal >>"$log_file" 2>&1; then
             status="installed"
         else
             status="failed"
         fi
     else
         status="missing"
-        route="no interpreter found"
+        route="no interpreter with pip or uv found"
     fi
 
     # Re-check with the interpreter the launcher uses. An install that lands somewhere the launcher
@@ -90,16 +95,11 @@ fi
 
 printf '%s\n' "$status" > "$state_dir/open-terminal-state" 2>/dev/null || true
 
-cat <<JSON
-{
-  "open_terminal": {
-    "status": $(printf '%s' "$status" | sed 's/.*/"&"/'),
-    "route": $(printf '%s' "$route" | sed 's/.*/"&"/'),
-    "runtime_python": $(printf '%s' "$runtime_python" | sed 's/.*/"&"/'),
-    "checked_at": $(date +%s)
-  }
+jq -n --arg status "$status" --arg route "$route" --arg python "$runtime_python" \
+    '{open_terminal: {status: $status, route: $route, runtime_python: $python, checked_at: now}}' 2>/dev/null || {
+    printf '{"open_terminal":{"status":"%s","route":"%s","runtime_python":"%s","checked_at":%s}}\n' \
+        "$status" "$route" "$runtime_python" "$(date +%s)"
 }
-JSON
 
 # Non-fatal on purpose: %post runs this and must not fail an install because a package could not
 # be fetched offline.
