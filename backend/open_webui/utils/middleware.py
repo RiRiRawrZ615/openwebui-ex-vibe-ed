@@ -2458,6 +2458,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             ex_tool_tokens,
         )
         form_data['messages'] = shaped
+        # The send has to match what was measured. If the fit dropped the tool definitions to make
+        # room, the request must not still carry them; that is how a gate reporting a prompt that
+        # fits can still send a request the engine bills as larger than the window. This is the turn
+        # boundary, so it also covers a chat resumed later with a long stored history.
+        if ex_gate.get('tool_block_dropped'):
+            form_data['tools'] = []
         metadata['exContextWindow'] = {**ex_shape, 'gate': ex_gate}
 
         # Crossing the rollover point now has to shrink the prompt, not only record where the next
