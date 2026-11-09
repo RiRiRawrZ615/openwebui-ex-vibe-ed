@@ -146,8 +146,12 @@ launcher_for_scope() {
 }
 
 read_env() {
-    local pid="$1"
-    if [[ -r "/proc/$pid/environ" ]]; then tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null; return 0; fi
+    local pid="$1" out
+    # A root-owned service in procfs looks readable to -r but the read itself is refused, so the
+    # test cannot decide; the read has to be attempted and its output checked. Silence, not a
+    # permission error, is what the ordinary user should see here.
+    out=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null) || out=""
+    [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
     # A root-owned service cannot be read by an ordinary user, so a scope built only on environ
     # silently excludes exactly the processes a user cannot kill either. With --sudo both halves are
     # possible, and without it the script says so instead of reporting an empty scope.
@@ -184,15 +188,18 @@ scope_ports() {
 
 matches_scope() {
     # A pid belongs to this scope only if its cmdline or cwd points at this scope's code copy.
-    local pid="$1" code="$2" runtime="$3" cmd cwd
+    # The third argument is optional, so it must be defaulted. `local runtime="$3"` under set -u
+    # aborted the whole script on the first two-argument call, which is the path the port sweep
+    # takes. That is the unbound-variable crash reported at line 172.
+    local pid="$1" code="$2" runtime="${3:-}" cmd cwd
     [[ -d "/proc/$pid" ]] || return 1
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
     [[ "$cmd" == *"$code"* || "$cwd" == "$code" || "$cwd" == "$code"/* ]] && return 0
-    [[ -n "$3" ]] && { read_env "$pid" | grep -qx "OWV_RUNTIME_DIR=$3" && return 0; }
+    [[ -n "$runtime" ]] && { read_env "$pid" | grep -qx "OWV_RUNTIME_DIR=$runtime" && return 0; }
     # A service started by the s6 or systemd unit has no launcher and no cwd inside the code copy,
     # but its cwd is the runtime dir it was told to use. That is scope evidence too.
-    [[ -n "$3" && "$cwd" == "$3"/* ]] && return 0
+    [[ -n "$runtime" && "$cwd" == "$runtime"/* ]] && return 0
     return 1
 }
 

@@ -316,7 +316,10 @@ def steering_note(hit: dict, tool_name: str = "") -> str:
 TOOL_MARKUP = re.compile(r"<tool_call>\s*<function=([A-Za-z0-9_]+)>\s*(.*?)</function>\s*</tool_call>", re.S)
 INVOKE_MARKUP = re.compile(r"<invoke\s+name=\"([A-Za-z0-9_]+)\"", re.S)
 FENCED_BLOCK = re.compile(r"```[^\n]*\n(.*?)```", re.S)
-PROSE_CALL = re.compile(r"(?:^|\n)[ \t]*([A-Za-z_][A-Za-z0-9_]{2,})\(", re.S)
+# The group covers the whole call, not only the name and its opening paren. Without the arguments and
+# the closing paren, a prose call leaves its body behind, and that leftover reads as answer text when
+# deciding whether a replay is safe.
+PROSE_CALL = re.compile(r"(?:^|\n)[ \t]*([A-Za-z_][A-Za-z0-9_]{2,})\([^\n]*\)", re.S)
 
 
 def text_tool_call_shapes(text: str, available: set[str] | None = None) -> list[dict]:
@@ -335,16 +338,20 @@ def text_tool_call_shapes(text: str, available: set[str] | None = None) -> list[
     text = str(text or "")
     shapes = []
     for m in TOOL_MARKUP.finditer(text):
-        shapes.append({"name": m.group(1), "shape": "template_markup"})
+        shapes.append({"name": m.group(1), "shape": "template_markup", "span": m.span()})
+    # An invoke shape is recorded with the block it belongs to, not just the opening tag. A span over
+    # the tag alone leaves the parameters behind, and those read as answer text.
+    fences = [m.span() for m in FENCED_BLOCK.finditer(text)]
     for m in INVOKE_MARKUP.finditer(text):
-        shapes.append({"name": m.group(1), "shape": "fenced_or_unwrapped_invoke"})
+        span = next((f for f in fences if f[0] <= m.start() < f[1]), m.span())
+        shapes.append({"name": m.group(1), "shape": "fenced_or_unwrapped_invoke", "span": span})
     # A call written as prose is only a call when the name is one the request declared, and
     # when it stands on its own line. `min(1, 2)` inside a sentence is not a tool call, so the
     # two conditions are what keep this from flagging ordinary text.
     for m in PROSE_CALL.finditer(text):
         name = m.group(1)
         if available is None or name in available:
-            shapes.append({"name": name, "shape": "prose_call"})
+            shapes.append({"name": name, "shape": "prose_call", "span": m.span()})
     return shapes
 
 
@@ -380,7 +387,25 @@ def text_tool_markup_issues(text: str, available: set[str] | None = None) -> dic
     # nothing executed and the turn answered with the markup itself.
     unparsed = sorted({h["name"] for h in shapes if h["shape"] != "template_markup"})
     unclosed = str(text or "").count("<tool_call>") > str(text or "").count("</tool_call>")
-    return {"markup": shapes, "unknown": unknown, "unparsed": unparsed, "unclosed": unclosed}
+    # Whether the message consists only of call shapes. That distinction is what decides if a replay
+    # is safe: text the user actually received cannot be sent twice, but a reply that was nothing but
+    # an unreadable call block delivered nothing, and refusing to re-run there is what left the turn
+    # answering with markup.
+    # Spans, not substitution. Substitution cannot tell a matched shape from the text around it that
+    # it did not consume, so a call written as name(arg) left its arguments behind as leftover text and
+    # read as an answer. A shape that consumed the whole call is what makes this test mean anything.
+    stripped = str(text or "")
+    for shape in shapes:
+        span = shape.get("span")
+        if span:
+            stripped = stripped[:span[0]] + "\n" + stripped[span[1]:]
+    return {
+        "markup": shapes,
+        "unknown": unknown,
+        "unparsed": unparsed,
+        "unclosed": unclosed,
+        "markup_only": bool(shapes) and not stripped.strip(),
+    }
 
 def pairing_safe_insert_index(messages: list[dict]) -> int:
     """Where a note can be inserted without breaking tool call/output pairing.

@@ -399,7 +399,11 @@ def shape_retry_decision(settings: dict, markup: dict, *, attempt: int = 1, stre
         shape_retries=settings.get("shapeRetries", 1),
         base_backoff=settings.get("backoffSeconds", 2.0),
     )
-    permitted = retry_permitted(verdict, partial_output=streamed)
+    # Partial output blocks a replay because already-streamed text would be sent twice. A reply that
+    # was nothing but an unreadable call block delivered nothing the user received, so there is
+    # nothing to duplicate and the replay is the correct response. That was the case being refused.
+    partial = bool(streamed) and not markup.get("markup_only")
+    permitted = retry_permitted(verdict, partial_output=partial)
     return {
         "retry": bool(permitted.get("permitted")) and bool(settings.get("autoRetry", True)),
         "names": names,
