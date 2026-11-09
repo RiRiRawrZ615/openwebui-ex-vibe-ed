@@ -474,7 +474,9 @@ def apply_overflow_policy(
     """Trim toward a headroom target rather than exactly to the budget.
 
     Returns the shaped messages and a report describing what happened, so the UI can show it
-    and a test can assert on it.
+    and a test can assert on it. When stubbing tool output is not enough, the oldest turns are
+    evicted per turn rather than the request being refused for size; on dev the size gate does
+    not refuse, it evicts.
     """
     incoming = messages_tokens(messages)
     report: dict[str, Any] = {
@@ -495,6 +497,20 @@ def apply_overflow_policy(
     report["trimmed"] = after != incoming
     report["tokens_after"] = after
     report["still_over"] = after > budget
+    if report["still_over"]:
+        # Stubs are not enough, so whole oldest turns go. This is the step the engine used to
+        # refuse on instead: a request larger than the window is not served, and the correct
+        # response is to make it fit, not to hand back an error. Import is local because
+        # ex_evict measures through this module.
+        from open_webui.utils.ex_evict import evict_to_fit
+
+        shaped, evict_report = evict_to_fit(shaped, budget, keep_tool_turns=keep_tool_turns)
+        report["evict"] = evict_report
+        report["evicted_turns"] = evict_report["evicted_turns"]
+        report["tokens_after"] = messages_tokens(shaped)
+        report["still_over"] = report["tokens_after"] > budget
+        if report["still_over"]:
+            report["blocked_reason"] = evict_report.get("blocked_reason", "nothing load bearing left to drop")
     return shaped, report
 
 

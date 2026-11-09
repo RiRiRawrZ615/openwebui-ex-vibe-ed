@@ -24,7 +24,7 @@
 	import Chats from './InputMenu/Chats.svelte';
 	import Files from './InputMenu/Files.svelte';
 	import { resolveExSettings } from '$lib/utils/exSettings';
-	import TokenSource from './InputMenu/TokenSource.svelte';
+
 	import Notes from './InputMenu/Notes.svelte';
 	import Knowledge from './InputMenu/Knowledge.svelte';
 	import AttachWebpageModal from './AttachWebpageModal.svelte';
@@ -148,7 +148,7 @@
 					in:fly={{ x: -20, duration: 150 }}
 				>
 					{#if resolveExSettings($settings).liveStats}
-						<TokenSource />
+
 					{/if}
 					{#if toolPermissionsEnabled}
 						<button

@@ -49,6 +49,10 @@ class Tools:
         MAX_HEAD_LINES: int = 120
         COMMAND_TIMEOUT: int = 120
         ALLOW_INSTALL: bool = True
+        # Off by default. This line was the reason the agent talked about a token budget and then
+        # shortened its own reasoning and answers, because the tool appended it to every result the
+        # model read. The accounting is still available when someone wants it for the log.
+        CONTEXT_BUDGET_NOTES: bool = False
         AUTHORIZATION: str = 'authorized - owned or permitted target, for interoperability and security analysis'
 
     class UserValves(BaseModel):
@@ -159,14 +163,20 @@ class Tools:
         return path
 
     def _budget(self, st: dict) -> str:
+        """Accounting only, and empty unless the valve is turned on.
+
+        It used to read "trim output, stop re-verifying" at 70% and "handoff() now" at 90%. That is an
+        instruction aimed at the model, and it landed in every tool result, which is how an agent that
+        was never told its window kept behaving as though a token budget were watching it: it shortened
+        its own reasoning and answers to stay inside a limit it had only been hinted at. A number in
+        the log is fine. A number that orders the model to write less is not.
+        """
+        if not getattr(self.valves, 'CONTEXT_BUDGET_NOTES', False):
+            return ''
         ceiling = int(st['context']['ceiling'])
         used = int(st['context'].get('chars', 0))
         pct = 100.0 * used / max(1, ceiling)
-        if pct > 90:
-            return '\nbudget: %d of %d (%.0f%%) - handoff() now and resume() in a fresh window' % (used, ceiling, pct)
-        if pct > 70:
-            return '\nbudget: %d of %d (%.0f%%) - trim output, stop re-verifying' % (used, ceiling, pct)
-        return ''
+        return '\nbudget accounting: %d of %d (%.0f%%)' % (used, ceiling, pct)
 
     def _cap(self, st: dict, text: str) -> str:
         limit = int(self.valves.MAX_OUTPUT_CHARS)

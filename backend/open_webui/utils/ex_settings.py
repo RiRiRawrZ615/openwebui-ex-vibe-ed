@@ -55,6 +55,22 @@ DEFAULTS = {
     "toolSchemaTokens": 4096,    # allowance for the tool definition block
     "trimTargetRatio": 0.85,     # headroom target after trimming, so the prefix stays stable
     "fitMaxTokens": True,        # shorten the requested output cap to the room the prompt leaves
+    # Context sliding. Past this share of the real window the oldest turns leave the prompt and
+    # are journalled by entry id, keeping the last few responses plus the last reasoning turn. The
+    # fraction scales, so a 262144 window slides at 183500 and a 128k machine slides at 89600
+    # with no per-machine tuning.
+    "contextSlide": True,        # the gate calls ex_slide per turn
+    "slideFraction": 0.70,       # share of the window that fires the slide
+    "slideKeepTail": 4,          # last agent/user responses kept intact
+    # Safety net for the case where nothing can fit. A generation cannot be interrupted mid-turn, so
+    # the only control is at the iteration boundary. When a prompt is over the window the gate builds
+    # the smallest prompt that still contains a real request from the reconstruction file instead of
+    # stopping at a refusal.
+    "safetyNet": True,
+    # The reconstruction block is injected every turn as a system instruction, not only when a slide
+    # fires. It carries prior context, the last full reasoning loop, the last response, the last user
+    # message, and the path of the text file holding all four.
+    "reconstructBlock": True,
     "enforceCeiling": True,      # refuse locally before the engine does; the engine never truncates
     # Feature E: the UI records the backend choice. It is a preference, not a promise;
     # the status endpoint reports what is actually serving the model.

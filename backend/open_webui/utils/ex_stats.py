@@ -207,29 +207,20 @@ def format_stats_line(stats: dict, approximate: bool = False) -> str:
 
 
 def context_chips(state: dict | None) -> list[dict]:
-    """The context rollover indicator for the stats row.
+    """The context indicator for the stats row.
 
-    One entry, always present when the rollover is on. A chip that only appears after the first
-    eviction reads as an error rather than as a state, so the row needs the dimmed form too.
+    It used to show the number of sheds, and that figure went stale for two reasons. The shed path
+    only runs when the rollover flags are on, while the gate now slides every turn past the point, so
+    a chat could be evicting constantly and show zero. And even when the counter moved, a number that
+    increments on every request carries no information: it is a request count wearing a context label.
 
-    `active` is what the component uses to choose dimmed or lit: nothing shed yet is dimmed, a shed
-    that has happened is lit. `count` is the number of sheds for this chat and is drawn in the top
-    right of the icon. The count comes from the per-chat state file written by ex_rollover when a
-    shed happens, so it is a real count of sheds and not an estimate.
+    So the chip reports what is actionable instead, the journal entries the ex_journal tool can read
+    back for this chat. It renders only when that number is nonzero, which is why the always-present
+    dimmed form was dropped: a permanent decoration on a system that evicts every turn tells the user
+    nothing they could not infer from the settings.
     """
-    state = state or {}
-    rolls = int(state.get("rolls") or 0)
-    return [
-        {
-            "label": "C",
-            "value": str(rolls),
-            "count": rolls,
-            "active": rolls > 0,
-            "title": (
-                f"{rolls} context sheds for this chat"
-                if rolls
-                else "no context shed yet for this chat"
-            ),
-            "phase": "rollover",
-        }
-    ]
+    # Removed at RiRi's call. The chip was a permanent marker on the stats row, and a marker for a
+    # system that evicts every turn carries no information; the number under it was a per-request count
+    # dressed as a context figure. The eviction state is still recorded in the chat state file, where
+    # the journal tool and the log can read it. It is just no longer drawn.
+    return []

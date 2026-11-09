@@ -14,7 +14,7 @@ During streaming the numbers are estimates from a character heuristic and are ma
 leading tilde. Once the provider sends its usage block they are replaced with real figures.
 -->
 <script lang="ts">
-	import { statChips, groupDigits, contextChips, type Stats, type RolloverState } from '$lib/utils/exStats';
+	import { statChips, groupDigits, type Stats } from '$lib/utils/exStats';
 
 	export let stats: Stats = {};
 	export let approximate = false;
@@ -30,13 +30,6 @@ leading tilde. Once the provider sends its usage block they are replaced with re
 	// already shows the fill, so this chip appears only when the figure had to come from the message
 	// list, which is an estimate and has to say so.
 	export let windowInfo: { fill: number | null; source: string; window: number | null } | null = null;
-	// Context rollover state for this chat. Dimmed when nothing has been evicted yet, lit after the
-	// first shed, with the number of sheds in the top right. It is a state marker, so the dimmed form
-	// matters: a marker that only appears after an event reads as an alarm rather than as a setting
-	// that is armed and waiting.
-	export let rollover: RolloverState | null = null;
-
-	$: exRoll = contextChips(rollover)[0];
 
 	// The window figure is only meaningful during a turn, when the caller is tracking the
 	// message-list estimate. Showing it on a finished message would imply the window is still
@@ -44,24 +37,11 @@ leading tilde. Once the provider sends its usage block they are replaced with re
 	$: chips = [...statChips(stats, approximate, tokenSource), ...engineChips];
 </script>
 
-{#if chips.length || rollover}
+{#if chips.length}
 	<div
 		class="ex-stats mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[0.6875rem] leading-none"
 		aria-label={approximate ? 'generation stats, estimated' : 'generation stats'}
 	>
-		{#if rollover}
-			<span
-				class="relative inline-flex items-center rounded-md border px-1.5 py-1 {exRoll.active
-					? 'border-gray-300 text-gray-700 dark:border-white/[0.12] dark:text-gray-200'
-					: 'border-gray-200/60 text-gray-400 dark:border-white/[0.06] dark:text-gray-600'}"
-				title={exRoll.title}
-				aria-label={exRoll.title}
-			>
-				C
-				<span class="absolute right-1 top-[-0.25rem] text-[0.5rem] leading-none">{exRoll.count}</span>
-			</span>
-		{/if}
-
 		{#each chips as chip (chip.label)}
 			<span
 				class="inline-flex items-center gap-1 rounded-md border border-gray-200/60 bg-gray-100/50 px-1.5 py-1 text-gray-500 dark:border-white/[0.06] dark:bg-white/[0.03] dark:text-gray-400"

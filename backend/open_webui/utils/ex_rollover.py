@@ -705,3 +705,34 @@ def bump_rolls(
     except OSError:
         return state
     return state
+
+
+def record_slide(
+    data_dir: str,
+    chat_id: str,
+    entries: int = 0,
+    evicted_tokens: int = 0,
+    kept_tokens: int = 0,
+    reason: str = "slide",
+) -> dict:
+    """Count one slide, written only when a slide actually fires.
+
+    The stats icon counted sheds, and that stopped meaning anything once the gate slides every
+    turn past the point: a number that increments on every request is not a signal, it is a request
+    counter. What is worth showing is the part the agent can act on, which is how many evicted turns
+    the journal tool can read back. So this records entries, not events.
+    """
+    state = chat_state(data_dir, chat_id)
+    state["slides"] = int(state.get("slides") or 0) + 1
+    state["entries"] = int(state.get("entries") or 0) + int(entries or 0)
+    state["last_slide_at"] = int(time.time())
+    state["last_slide_entries"] = int(entries or 0)
+    state["last_shed_tokens"] = int(evicted_tokens or 0)
+    state["last_kept_tokens"] = int(kept_tokens or 0)
+    if reason:
+        state["last_reason"] = str(reason)[:80]
+    try:
+        (chat_dir(data_dir, chat_id) / STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except OSError:
+        return state
+    return state

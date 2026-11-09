@@ -47,7 +47,11 @@ export function engineChips(value: EngineStatusResponse | null, settings: Record
 
 	if (!value || !status) return chips;
 
-	if (status.speed) {
+	// The rate was ungated, so the row always carried both the engine rate and the front-end arrival
+	// rate even when the setting said one of them. Same rule as exStats.ts: this side shows only when
+	// the source is engine or both.
+	const rateSource = settings?.statsTokenSource ?? 'both';
+	if ((rateSource === 'engine' || rateSource === 'both') && status.speed) {
 		// The log says "reading the prompt"; the row should say what that phase is doing, which is prefill.
 	const shownPhase = status.phase === 'reading the prompt' ? 'prefill' : status.phase;
 	const phase = status.tool ? `${shownPhase} ${status.tool}` : shownPhase;

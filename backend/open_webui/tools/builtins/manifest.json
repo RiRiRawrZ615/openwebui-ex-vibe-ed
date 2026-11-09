@@ -27,6 +27,22 @@
     ],
     "tool_id": "custom_duckduckgo_search_30"
   },
+  "ex_journal": {
+    "exposed": [
+      "index",
+      "read",
+      "reconstruct"
+    ],
+    "missing": [],
+    "name": "Journal Reader",
+    "source": "ex_journal.py",
+    "specs": [
+      "index",
+      "read",
+      "reconstruct"
+    ],
+    "tool_id": "ex_journal"
+  },
   "fleet_ops": {
     "exposed": [
       "adb",

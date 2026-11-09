@@ -52,6 +52,7 @@ from open_webui.utils.ex_rollover import (
     manifest as rollover_manifest,
     mark_carry,
     on_demand,
+    record_slide,
     read_chat,
     read_index,
     read_reasoning,
@@ -246,7 +247,10 @@ def drain_steering(messages: list[dict], chat_id: str, settings: dict, data_dir:
     result = steering_plan(messages, pending, turn_open=turn_open)
     applied = []
     for entry in sorted(result["apply"], key=lambda e: e["insert_at"], reverse=True):
-        messages.insert(entry["insert_at"], {"role": "user", "content": entry["note"], "exSteering": True})
+        # System role. A note inserted as a user turn reads as something the user said, and the model
+        # answers the note instead of the request it was given. The guard's note is an observation
+        # about the turn, so it belongs on the instruction side of the prompt.
+        messages.insert(entry["insert_at"], {"role": "system", "content": entry["note"], "exSteering": True})
         mark_applied(entry["item"], data_dir)
         applied.append({"id": entry["item"].get("id"), "note": entry["note"], "insert_at": entry["insert_at"]})
     return {
@@ -558,6 +562,62 @@ def prompt_gate(
     report["trimmed"] = projected_tokens(shaped, allowance) != before
     report["tokens_after_trim"] = projected_tokens(shaped, allowance)
 
+    # 2a. Slide: the policy layer on top of trimming. Past the configured fraction of the real
+    # window, the oldest turns leave the prompt and are journalled by entry id, and the handoff
+    # block names those ids so the agent can read its own evicted text back. Without this call
+    # the slide module never ran in a live request, which is why a growing agentic chat still
+    # reached the refusal below. The writer is passed as a callback so the append happens here,
+    # in the request path, not inside a module that could be holding the fork lock.
+    if settings.get("contextSlide", True):
+        from open_webui.utils import ex_slide
+
+        jpath = journal_path(data_dir, chat_id)
+        shaped, slide_report = ex_slide.slide(
+            shaped,
+            data_dir=data_dir,
+            window=ceiling,
+            entry_writer=lambda entry: append_journal(jpath, [entry], chat_id),
+            fraction=float(settings.get("slideFraction") or ex_slide.SLIDE_FRACTION),
+            keep_tail=int(settings.get("slideKeepTail") or ex_slide.KEEP_TAIL_TURNS),
+            chat_id=chat_id,
+        )
+        report["slide"] = slide_report
+        report["slid"] = bool(slide_report.get("slid"))
+        report["tokens_after_slide"] = projected_tokens(shaped, allowance)
+
+        # The stats row needs something it can act on. Counting turns that left the prompt is
+        # useless once this runs every turn, so the state stores the journal entries the tool can
+        # read back. Written only on a real slide, same as the shed counter was.
+        if report["slid"]:
+            report["state"] = record_slide(
+                str(data_dir),
+                chat_id,
+                entries=len(slide_report.get("journal_ids") or []),
+                evicted_tokens=max(0, report["tokens_after_trim"] - report["tokens_after_slide"]),
+                kept_tokens=report["tokens_after_slide"],
+            )
+
+    # 2b. The reconstruction block, every turn, whether or not a slide fired. It is the minimum needed
+    # to pick the conversation back up in a fresh window: prior context, the last full reasoning loop,
+    # the last response, the last user message, and the path of the text file holding all four. System
+    # role, and the block says plainly that it is not something the user said.
+    if settings.get("reconstructBlock", True) and chat_id:
+        from open_webui.utils.ex_reconstruct import reconstruct_block, write_reconstruct
+
+        parts = write_reconstruct(data_dir, chat_id, shaped)["parts"]
+        # One copy per turn. A block left by an earlier turn is replaced rather than stacked, which is
+        # the same rule inject_at_tail already applies to the RAG block.
+        # Checked by content rather than by prefix because the block reaches the prompt through
+        # inject_at_tail, which carries the fork's own marker in front of it.
+        shaped = [m for m in shaped if "[context slide]" not in str(m.get("content", ""))]
+        shaped, inject_report = inject_at_tail(shaped, reconstruct_block(data_dir, chat_id, parts))
+        report["reconstruct"] = {
+            "parts": list(parts.keys()),
+            "injected": bool(inject_report.get("injected")),
+            "tokens": inject_report.get("tokens"),
+        }
+        report["tokens_after_reconstruct"] = projected_tokens(shaped, allowance)
+
     # 2. Shed only when the honest count crosses the rollover point. The dump is written before
     #    anything leaves the prompt, so the copy on disk exists first.
     shed_target = max(1, int(budget * keep_ratio))
@@ -605,5 +665,27 @@ def prompt_gate(
             ceiling,
             report["over_by"],
         )
+
+    # 5. Safety net for the case where nothing can fit. There is no mid-turn interrupt; the only
+    #    boundary the fork controls is the iteration boundary, where the steering queue can stop the
+    #    next call. When a prompt is over the window the fork therefore builds the smallest prompt that
+    #    still contains a real request, from the reconstruction file, and reports it as what would go
+    #    out instead of stopping at a refusal. If even the minimum does not fit, the refusal stands.
+    if report["refused"] and settings.get("safetyNet", True) and chat_id:
+        from open_webui.utils.ex_reconstruct import minimum_prompt
+
+        minimum = minimum_prompt(data_dir, chat_id, shaped)
+        minimum_tokens = projected_tokens(minimum, allowance)
+        fits = minimum_tokens + max(fit, ANSWER_ROOM_MIN) <= ceiling
+        report["safety_net"] = {
+            "parts": ["pinned head", "reconstruction block", "current request"],
+            "tokens": minimum_tokens,
+            "usable": fits,
+        }
+        if fits:
+            report["refused"] = False
+            report["safety_net_used"] = True
+            shaped = minimum
+            report["measured_after"] = minimum_tokens
 
     return shaped, report

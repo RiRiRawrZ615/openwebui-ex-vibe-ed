@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.0
+Version:        1.1.2
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -62,6 +62,25 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Sun Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.2-1.rc1
+- Journal tool registered in the builtins manifest with index, read and reconstruct, so the pointer
+  the prompt prints now resolves to a callable tool.
+- New module ex_reconstruct.py: the minimum set to restart a conversation in a fresh window (prior
+  context, the last full reasoning loop, the last response, the last user message) written as plain
+  text every turn.
+- The handoff and the loop-guard note arrive as system instructions, not as user turns, and the block
+  states plainly that this is a new conversation and not something the user said.
+- evict_to_fit can now evict user turns; a chat grown by user text no longer has nothing left to
+  shed and no longer ends in a refusal. The current request is protected by identity, not by index.
+- Safety net: when nothing fits, the gate builds the minimum prompt that still contains a real
+  request instead of stopping at a refusal.
+- Stats row: the context chip is removed. A permanent marker on a system that evicts every turn is
+  not a signal, and the number under it counted requests.
+- Token rate chips now obey the source setting; the duplicate selector in the composer menu is gone.
+- Loop guard: a tool call cut off mid-run reports as truncated instead of as an empty call, and the
+  note no longer orders another call.
+- leanrea tool: the budget line is accounting only and defaults off behind CONTEXT_BUDGET_NOTES. It
+  was the reason agents shortened their own reasoning to a limit they had only been hinted at.
 * Sun Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.0-1.rc1
 - Stats row: the ctx chip reports the window fill (request size, or last request size plus this
   turn), not a per-turn count. The chip names its source.

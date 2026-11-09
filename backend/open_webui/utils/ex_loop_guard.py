@@ -78,6 +78,28 @@ def call_signature(name: str, args: Any) -> str:
     return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def parses_as_args(args: Any) -> bool:
+    """Whether the arguments could actually be executed as a call.
+
+    A generation cut off mid-call leaves a half-written arguments string. That is not a call the
+    model chose; it is an output limit. Treating it as an empty call blamed the model for the
+    truncation and, past the threshold, steered it to call again, which usually produced another
+    cut-off call. The two failures were being reported as one.
+    """
+    if isinstance(args, dict):
+        return True
+    if args is None:
+        return False
+    text = str(args).strip()
+    if not text:
+        return False
+    try:
+        json.loads(text)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
 def output_signature(text: str) -> str:
     basis = re.sub(r"\s+", " ", str(text).strip()).lower()
     return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:12]
@@ -134,8 +156,9 @@ def refused_call_note(name: str) -> str:
     """What the model is told instead of a result. Deterministic, so it cannot drift."""
     return (
         f"[loop guard] This exact call to {name} has already run twice and returned nothing "
-        f"new. It was not executed. Change the arguments, choose a different tool, or state "
-        f"what is blocked and end the turn."
+        f"new. It was not executed. You do not have to call a tool again to close this turn: "
+        f"change the arguments, choose a different tool, answer in plain text, or state what "
+        f"is blocked and end the turn."
     )
 
 
@@ -149,6 +172,12 @@ def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THR
     calls: dict[str, int] = {}
     outputs: dict[str, int] = {}
     reasoning: list[str] = []
+    malformed = 0
+    # For each reasoning block after the first, how many tool calls ran between it and the
+    # block before. A similar pair with progress between the blocks is a restated plan, not a
+    # loop; the guard used to fire on those and push the model to call a tool it did not need.
+    gap_progress: list[int] = []
+    calls_since = 0
     empty_calls = 0
 
     for item in output_items:
@@ -157,8 +186,11 @@ def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THR
         item_type = item.get("type")
 
         if item_type == "function_call":
+            if not parses_as_args(item.get("arguments", "")):
+                malformed += 1
             sig = call_signature(item.get("name", ""), item.get("arguments", ""))
             calls[sig] = calls.get(sig, 0) + 1
+            calls_since += 1
 
         elif item_type == "function_call_output":
             text = ""
@@ -180,18 +212,23 @@ def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THR
                 if isinstance(part, dict):
                     text += str(part.get("text", ""))
             if text.strip():
+                gap_progress.append(calls_since)
+                calls_since = 0
                 reasoning.append(text)
 
     repeated_call = max(calls.values(), default=0)
     repeated_output = max(outputs.values(), default=0)
 
     consecutive = 0
+    stalled = 0
     best_pair = None
     for i in range(len(reasoning) - 1):
         score = similarity(reasoning[i], reasoning[i + 1])
         if score >= similarity_threshold:
             consecutive += 1
-            best_pair = (i, i + 1, round(score, 3))
+            if gap_progress[i + 1] == 0:
+                stalled += 1
+                best_pair = (i, i + 1, round(score, 3))
 
     verdict = "clean"
     reason = ""
@@ -213,10 +250,26 @@ def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THR
         verdict = "loop"
         reason = f"identical tool call repeated {repeated_call} times"
         action = "inject_note"
-    elif consecutive >= 2:
+    elif stalled >= 2:
         verdict = "loop"
-        reason = f"reasoning repeated across {consecutive + 1} consecutive turns (similarity {best_pair[2]})"
+        reason = (
+            f"reasoning repeated across {stalled + 1} consecutive turns with no tool call "
+            f"between them (similarity {best_pair[2]})"
+        )
         action = "inject_note"
+    elif malformed:
+        # Its own verdict, not folded into the loop counts. The call was cut off, so the useful
+        # response is a shorter call or a plain answer, not another attempt with the same payload.
+        verdict = "truncated"
+        reason = (
+            f"{malformed} tool call(s) arrived with arguments that do not parse, which reads as a "
+            f"generation cut off mid-call"
+        )
+        action = "shorten_next_call"
+    elif consecutive >= 2:
+        # Similar thinking, but the agent kept acting between the blocks. Progress is not a
+        # loop, so nothing is injected and a plain answer is allowed.
+        reason = f"reasoning restated the same plan while tool calls changed ({consecutive} similar pairs)"
 
     return {
         "verdict": verdict,
@@ -226,19 +279,36 @@ def scan(output_items: list[dict], *, repeat_threshold: int = DEFAULT_REPEAT_THR
         "max_call_repeat": repeated_call,
         "max_output_repeat": repeated_output,
         "reasoning_blocks": len(reasoning),
+        "stalled_pairs": stalled,
         "empty_calls": empty_calls,
+        "malformed_calls": malformed,
         "pair": best_pair,
     }
 
 
+def truncated_call_note(hit: dict) -> str:
+    """What the model is told when a call arrived cut off, which is not a loop."""
+    if hit.get("verdict") != "truncated":
+        return ""
+    return (
+        f"[loop guard] {hit['reason']}. Nothing is wrong with the plan; the response ended before "
+        f"the call was complete. Re-issue it with short arguments, or state what you meant in plain "
+        f"text and end the turn. Repeating the same long payload will cut off again."
+    )
+
+
 def steering_note(hit: dict, tool_name: str = "") -> str:
     """Deterministic note text. No model call, no paraphrasing, so it cannot drift."""
+    if hit.get("verdict") == "truncated":
+        return truncated_call_note(hit)
     if hit.get("verdict") != "loop":
         return ""
     target = f" on {tool_name}" if tool_name else ""
     return (
-        f"[loop guard] {hit['reason']}. Stop repeating this. Change approach: alter the "
-        f"arguments, pick a different tool, or state what is blocked and end the turn."
+        f"[loop guard] {hit['reason']}. This is an observation, not an order to call a tool. "
+        f"If it is really stuck, change approach: alter the arguments, pick a different tool, "
+        f"answer in plain text with what is already known, or state what is blocked and end "
+        f"the turn."
         f"{target}"
     )
 

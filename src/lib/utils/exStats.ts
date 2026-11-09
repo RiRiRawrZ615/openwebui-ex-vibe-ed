@@ -318,14 +318,18 @@ export function statChips(
 			title: 'Prompt tokens served from the KV cache'
 		});
 
-	if (stats['tokens_per_second'])
+	// The rate chips were not gated at all, which is why both counters always appeared no matter what
+	// the source setting said. The token figures respected the choice and the rates did not, so the row
+	// showed the front-end arrival rate and the engine rate side by side and the switch only moved the
+	// token half. One gate per side: this side shows when the source is live or both.
+	if (tokenSource !== 'engine' && stats['tokens_per_second'])
 		chips.push({
 			label: 'tok/s',
 			value: oneDecimal(stats['tokens_per_second']),
 			title: approximate ? 'Current arrival rate, estimated' : 'Generation rate reported by the backend'
 		});
 
-	if (stats['prompt_per_second'])
+	if (tokenSource !== 'engine' && stats['prompt_per_second'])
 		chips.push({
 			label: 'prefill',
 			value: oneDecimal(stats['prompt_per_second']),
@@ -342,6 +346,8 @@ export function statChips(
 	return chips;
 }export type RolloverState = {
 	rolls: number;
+	entries?: number;
+	slides?: number;
 	last_shed_at?: number;
 	last_shed_tokens?: number;
 	last_kept_tokens?: number;
@@ -357,18 +363,10 @@ export type ContextChip = {
 };
 
 export function contextChips(state: RolloverState | null): ContextChip[] {
-	// Mirror of context_chips in backend/open_webui/utils/ex_stats.py. The chip is always present so
-	// the row can show the dimmed form: a marker that only appears after the first eviction reads as
-	// an event that happened, not as a state that is switched on.
-	const rolls = Number(state?.rolls ?? 0);
-	return [
-		{
-			label: 'C',
-			value: String(rolls),
-			count: rolls,
-			active: rolls > 0,
-			title: rolls ? `${rolls} context sheds for this chat` : 'no context shed yet for this chat',
-			phase: 'rollover'
-		}
-	];
+	// Mirror of context_chips in backend/open_webui/utils/ex_stats.py. The icon is gone: a permanent
+	// marker on a system that evicts every turn says nothing, and the number under it counted requests
+	// rather than anything the agent could act on. The state is still recorded on disk for the log.
+	// state is accepted so the caller signature stays the same as the backend mirror; nothing is drawn.
+	void state;
+	return [];
 }
