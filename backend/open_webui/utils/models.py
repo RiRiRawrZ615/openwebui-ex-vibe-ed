@@ -8,7 +8,8 @@ from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
     DEFAULT_ARENA_MODEL,
 )
-from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, ENABLE_FUNCTIONS, GLOBAL_LOG_LEVEL, REDIS_KEY_PREFIX
+from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, DATA_DIR, ENABLE_FUNCTIONS, GLOBAL_LOG_LEVEL, REDIS_KEY_PREFIX
+from open_webui.utils.ex_handshake import load_handshake
 from open_webui.functions import get_function_models
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.config import Config
@@ -191,6 +192,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
     custom_models = await Models.get_all_models()
 
+    # The launcher is the authority on which engine is live, so the fork's own catalog rows are
+    # attributed to it. Read once here rather than per row.
+    handshake = load_handshake(DATA_DIR)
+    fork_backend = (handshake or {}).get('backend') or 'llamacpp'
+    fork_model = (handshake or {}).get('model') or ''
+
     # Single O(1) lookup: Ollama base names first, then exact IDs (exact wins).
     base_model_lookup = {}
     for model in models:
@@ -240,6 +247,29 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                     model['filter_ids'] = filter_ids
                 else:
                     models = [m for m in models if m is not model]
+
+            elif custom_model.is_active:
+                # A row with no base model has nothing to override, and the provider registries only
+                # report models a connected provider serves, so a catalog row created inside the fork
+                # was dropped from the list entirely. Measured: 55 rows in her database had
+                # base_model_id NULL and the endpoint returned 5 entries, all from a connected
+                # provider. A model the user added is still a model, so a row with no base is listed on
+                # its own against the engine the launcher started.
+                info = custom_model.model_dump()
+                info['params'] = public_model_params(info.get('params') or {})
+                models.append({
+                    'id': custom_model.id,
+                    'name': custom_model.name,
+                    'object': 'model',
+                    'created': custom_model.created_at,
+                    'owned_by': fork_backend,
+                    'connection_type': fork_backend,
+                    'preset': True,
+                    'loaded': custom_model.id == fork_model,
+                    'info': info,
+                    'action_ids': [],
+                    'filter_ids': [],
+                })
 
         elif custom_model.is_active:
             if custom_model.id in existing_ids:
