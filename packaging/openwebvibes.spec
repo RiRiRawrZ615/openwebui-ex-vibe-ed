@@ -38,6 +38,11 @@ install -d -m 755 "%{buildroot}/usr/lib/systemd/system"
 
 cp -a backend "%{buildroot}/usr/lib/openwebvibes/"
 cp -a build "%{buildroot}/usr/lib/openwebvibes/"
+# env.py reads CHANGELOG.md at import time. Shipping it is the primary fix; the code now also tolerates
+# its absence so a partial install cannot stop the webui from booting.
+if [ -f CHANGELOG.md ]; then
+    install -m 644 CHANGELOG.md "%{buildroot}/usr/lib/openwebvibes/CHANGELOG.md"
+fi
 
 install -m 755 packaging/launcher/owv.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv.sh"
 install -m 755 packaging/launcher/owv-packaged.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-packaged.sh"
@@ -84,6 +89,16 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
   health timeout read as a dead port. A venv cannot see ~/.local site-packages, which is why the check
   is an import and not a file lookup.
 - The health failure now names the port and the log file instead of warning generically.
+- Launcher: the stale-build check no longer runs a find against a src directory the packaged install
+  never contains. Under pipefail the pipeline status was find's, so the assignment failed, errexit
+  fired right after the terminal stage, and the cleanup trap tore down the engine and a terminal that
+  had just become healthy. Only affects RPM installs, since a git checkout has src.
+- Terminal resolution probes the full import set, not just the package. open_terminal imports nbformat
+  at module level, and on both fleet boxes the package resolved while nbformat was absent: banner,
+  traceback, expired health window.
+- CHANGELOG.md is now in the package archive. env.py read it at import time and the except branch
+  called pkgutil.get_data, which raises FileNotFoundError when the file is missing, so the module import
+  died on every packaged install. The fallback is now guarded.
 
 * Sun Nov 08 2026 Qwen 3.8 <qwen@localhost> - 1.1.2-1.rc1
 - Journal tool registered in the builtins manifest with index, read and reconstruct, so the pointer

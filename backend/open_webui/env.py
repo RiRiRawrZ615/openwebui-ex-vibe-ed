@@ -181,7 +181,15 @@ try:
         changelog_content = file.read()
 
 except Exception:
-    changelog_content = (pkgutil.get_data('open_webui', 'CHANGELOG.md') or b'').decode()
+    # The fallback was not safe. pkgutil.get_data raises FileNotFoundError when the file is not in the
+    # package, and the RPM archive carries backend, build, packaging and tests but not CHANGELOG.md, so
+    # every packaged install hit this branch and the except clause itself threw. The module import died,
+    # the webui exited during startup, and the launcher reported only "webui exited during startup".
+    # A missing changelog is a missing page in the About tab, not a reason to refuse to boot.
+    try:
+        changelog_content = (pkgutil.get_data('open_webui', 'CHANGELOG.md') or b'').decode()
+    except Exception:
+        changelog_content = ''
 
 # Convert markdown content to HTML
 html_content = markdown.markdown(changelog_content)
