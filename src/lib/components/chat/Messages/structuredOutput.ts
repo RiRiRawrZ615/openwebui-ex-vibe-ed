@@ -1,5 +1,13 @@
 import { encode } from 'html-entities';
 
+// Set by the renderer from the resolved ex settings. A plain module variable so this file stays a
+// pure formatter with no store dependency.
+export let thinkingDisplayMode = 'collapsed';
+
+export function setThinkingDisplayMode(mode: string): void {
+	thinkingDisplayMode = mode === 'list' || mode === 'expand' ? mode : 'collapsed';
+}
+
 export type OutputContentPart = {
 	type?: string;
 	text?: unknown;
@@ -444,10 +452,21 @@ export function buildOutputDisplayItems(output: OutputItem[] = []): OutputDispla
 		// produces the familiar 'Thought for N seconds' line.
 		if (item.type === 'reasoning') {
 			if (getReasoningText(item).trim()) {
+				const token = buildReasoningToken(item, index === output.length - 1);
+				// Three presentations of the same group. The grouping already existed; what was missing
+				// was control over it, so a long agentic turn produced one collapsible per reasoning
+				// block and the chat became a wall of thinking headers.
+				if (thinkingDisplayMode === 'list') {
+					token.text = String(token.text ?? '')
+						.split('\n\n')
+						.map((block) => block.split('\n')[0].slice(0, 220))
+						.join('\n');
+				}
+				(token as OutputDetailToken & { open?: boolean }).open = thinkingDisplayMode === 'expand';
 				displayItems.push({
 					type: 'reasoning',
 					id: item.id ?? `reasoning-${index}`,
-					token: buildReasoningToken(item, index === output.length - 1)
+					token
 				});
 			}
 			return;

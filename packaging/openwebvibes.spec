@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.5
+Version:        1.1.6
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -80,6 +80,22 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.6-1.rc1
+- Scaled fit: the gate numbers are shares of the window the engine enforces, not constants written
+  for a 256k model. send_limit is window minus answer room minus a 1000 token buffer that scales with
+  the window; the 70% setting is the shed trigger, not the ceiling. Verified at 262144, 131072, 32768.
+- Tool loop: the gate re-measures at every iteration, on the list as it will actually go out, and
+  refuses instead of sending a request it cannot fit. One tightened retry, capped by maxIterations.
+- Agentic flush: the message list is rebuilt per iteration; preamble, journal index, current user
+  turn, current tool exchange and prefill survive, everything else is evicted, and each tool result is
+  capped with a pointer to the full text on disk.
+- Engine calibration: the gate keeps the engine's own count against its own measurement for the same
+  request. The refused request measured 224174 by the gate and 276348 by the engine, which is a ratio
+  and not noise.
+- shed_boundary now clamps to the message being answered instead of allowing a boundary past it.
+- Fitting no longer removes history with no journal copy when the rollover is off.
+- Engine phase stats: prefill, thinking and answering reported separately, one JSON line per request.
+
 * Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.5-1.rc1
 - Context gate: the count now includes the text inside message output items. A count that looked
   only at content reported a chat as 17,885 tokens while the engine counted 398,702 for the same

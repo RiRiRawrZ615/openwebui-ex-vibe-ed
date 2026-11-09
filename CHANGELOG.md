@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.1.6-rc1] - 2026-11-09
+
+Every item below came from a run, not from reading the code.
+
+### Added
+
+- **Engine calibration.** The gate now keeps the engine's own prompt count against its own
+  measurement for the same request and applies the measured ratio to the next projection. On the
+  request this chat was refused on, the gate projected 224,174 tokens for the message list the
+  engine billed as 276,348. That gap is a ratio, not noise, and a character estimate cannot match a
+  tokenizer on tool JSON. Clamped between 1.0 and 1.6 so one odd turn cannot permanently inflate it.
+- **Scaled fit** (`ex_fit.py`). Every gate number is now a share of the window the engine enforces,
+  instead of constants written for a 256k model. `send_limit = window - answer_room - buffer` is the
+  hard rule; the 70% setting is the shed trigger, not the ceiling. The 1000 token buffer scales with
+  the window (capped at 2%) so it does not eat a quarter of the room on a small context. Verified at
+  262144, 131072 and 32768.
+- **Agentic flush** (`ex_flush.py`). On an agentic turn the message list is rebuilt per iteration
+  rather than carried forward. The pieces that survive are stated in the module and are not optional:
+  preamble, the journal index, the current user turn, the current tool call and its result, prefill.
+  Everything else is evicted. Each tool result is capped with a pointer to the full text on disk,
+  because flushing history does not help when one result is larger than the window.
+- **Engine phase stats** (`ex_phase_stats.py`). Prefill, thinking and answering as three separate
+  numbers, plus whether the gate's number matched what the engine billed, plus what the flush
+  evicted. One JSON line per request, so the turn is readable without opening the engine log. Timing
+  fields stay empty when the engine does not report them; nothing is guessed.
+- **Evicted tool calls keep their signature** in the injected block, so the loop guard and the model
+  agree on what has already been called.
+- **One tightened retry on a gate refusal**, capped by the loop guard's maxIterations: tool
+  definitions dropped, results capped to a quarter, answer from the journal. A refusal is never
+  retried by sending the same request again.
+- **Thinking display modes**: `collapsed`, `list`, `expand`. The grouping already existed in
+  `buildReasoningToken`; what was missing was control over it, so a long agentic turn produced one
+  collapsible per reasoning block.
+
+### Fixed
+
+- **The tool loop measured nothing.** The gate ran once per turn, before any tool result for that
+  turn existed, then the loop appended results and called the engine again. The request the engine
+  billed was never the request the gate measured. The guard now re-measures at every iteration, on
+  the list as it will actually go out, and does not send a request it cannot fit.
+- **shed_boundary could cross the message being answered.** It put the boundary past the current user
+  turn, so the shed deleted the question and the turn answered an index stub. That is the lost work.
+  The pin now clamps the boundary to the anchor instead of refusing, which is what lets the common
+  agentic shape work: long tool history shed, short current turn kept.
+- **Fitting removed text with no journal copy.** The history step ran regardless of the rollover
+  flags, so on a chat with rollover off it deleted spans with nothing on disk. That is data loss,
+  not eviction, and it is now gated by the rollover flags.
+- **The rollover block no longer restates its own role.** It is injected with `role=system`, so the
+  three-sentence disclaimer was prompt weight on every turn describing something the role already
+  said. The block is now the marker plus the data.
+
+### Tests
+
+- `test_ex_gate.py` 43 passed, `test_ex_flush.py` 12, `test_ex_fit_scale.py` 13,
+  `test_ex_gate_iteration.py` 12. `svelte-check` has not been re-run, so the frontend side is
+  unverified.
+
 ## [1.1.2-rc1] - 2026-11-08
 
 Every item below came from a run, not from reading the code [1].

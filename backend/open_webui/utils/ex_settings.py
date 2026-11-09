@@ -76,6 +76,37 @@ DEFAULTS = {
     # message, and the path of the text file holding all four.
     "reconstructBlock": True,
     "enforceCeiling": True,      # refuse locally before the engine does; the engine never truncates
+    # The gate measures on a character ratio, the engine measures with a tokenizer, and the two are
+    # not the same number on tool JSON. Every request the engine answers reports its own prompt
+    # count, so the gate keeps the ratio for this chat and applies it to the next projection.
+    "engineCalibration": True,
+    # Shed passes per request. One pass is not enough when the span it removes is small; the gate
+    # re-measures after each pass until the prompt is under the threshold or a pass makes no progress.
+    "shedMaxPasses": 4,
+    "shedProtectTail": 4,        # messages appended since the last measurement are never shed
+    # Agentic flush. On an agentic turn the message list is rebuilt per iteration instead of
+    # carried forward: preamble, the journal index, the current user turn, and the tool exchange for
+    # this iteration. The engine keeps no chat state, so this is not a disguise; it is a new request.
+    # The exception list is not optional, and the pieces that must survive are stated in ex_flush.py.
+    "agenticFlush": True,
+    "flushEveryIteration": True,
+    # A fresh prompt can still exceed the window when one tool result is bigger than the window, so
+    # each result carries a capped head plus a pointer to the full text on disk.
+    "toolResultCapTokens": 12000,
+    # Prefill, thinking, answering reported separately. Timing fields are only shown when the engine
+    # reports them; nothing here is guessed.
+    "enginePhaseStats": True,
+    # Thinking display: 'collapsed' keeps the current per-block behavior, 'list' shows one grouped
+    # list of blocks, 'expand' opens everything.
+    "thinkingDisplay": "collapsed",
+    # The hard rule. Every number below is expressed as a share of the window the engine
+    # enforces, so a 128k backend is governed by 128k rules instead of 256k rules. The 70%
+    # setting is the shed trigger, not the limit; the limit is window - answer_room - buffer.
+    "sendBufferTokens": 1000,
+    "dropToolsToFit": True,        # the engine counts the tool block, so it is a real lever
+    "dropToolResultsToFit": True,
+    "dropToolTurnsToFit": True,      # call and result removed as one unit, never split
+    "keepCurrentToolTurn": True,
     # Feature E: the UI records the backend choice. It is a preference, not a promise;
     # the status endpoint reports what is actually serving the model.
     "backend": "auto",           # auto | llamacpp | strata

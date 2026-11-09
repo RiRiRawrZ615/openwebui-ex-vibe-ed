@@ -40,6 +40,7 @@ from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats, window_fill
 from open_webui.utils.ex_rag import ChatMemory, should_retrieve
+from open_webui.utils.ex_fit import fit_request, scaled_limits
 from open_webui.utils.ex_engine_log import (
     eta as engine_eta,
     parse_line as engine_parse_line,
@@ -71,6 +72,7 @@ from open_webui.utils.ex_context_window import (
     message_tokens,
     projected_tokens,
     proportional_reserve,
+    read_calibration,
     resolve_window,
     trim_to_budget,
 )
@@ -528,6 +530,12 @@ __all__ = [
 ]
 
 
+# How many shed passes one request may take. A single pass that removes a small span leaves the
+# prompt over the trigger, so the gate re-measures and tries again. The limit is there so a chat
+# whose unsheddable part is already larger than the threshold does not loop.
+SHED_MAX_PASSES = 4
+
+
 def prompt_gate(
     data_dir: Path | str,
     chat_id: str,
@@ -536,6 +544,8 @@ def prompt_gate(
     user_id: str = "",
     max_tokens: Any = None,
     tool_schema_tokens: Any = None,
+    since_tokens: int = 0,
+    protect_tail: int = 0,
 ) -> tuple[list[dict], dict]:
     """The measurement point that cannot be fooled.
 
@@ -593,10 +603,21 @@ def prompt_gate(
     keep_ratio = float(settings.get("rolloverShedKeepRatio") or 0.7)
     keep_tool_turns = int(settings.get("keepToolTurns") or DEFAULT_KEEP_TOOL_TURNS)
 
-    before = projected_tokens(messages, allowance)
+    # Engine calibration. The projection is a character ratio, the engine is a tokenizer, and on
+    # tool JSON the two disagree by more than the reply reserve. Measured on the request this chat
+    # was refused on: the gate projected 224174 tokens for the list the engine counted as 276348.
+    # The ratio comes from requests the engine actually answered, so it is measured, not assumed.
+    calibration = read_calibration(data_dir, chat_id) if settings.get("engineCalibration", True) else 1.0
+
+    since = max(0, int(since_tokens or 0))
+    before = projected_tokens(messages, allowance, calibration)
     report["ceiling"] = ceiling
     report["configured"] = int(configured) if configured else None
+    report["engine_window"] = detected
     report["budget"] = budget
+    report["threshold"] = int(budget * ratio)
+    report["calibration"] = round(calibration, 3)
+    report["since_tokens"] = since
     report["tool_schema_tokens"] = allowance
     report["tool_schema_source"] = "measured" if measured > 0 else "allowance"
     report["measured_before"] = before
@@ -674,31 +695,97 @@ def prompt_gate(
 
     # 2. Shed only when the honest count crosses the rollover point. The dump is written before
     #    anything leaves the prompt, so the copy on disk exists first.
+    #
+    # One pass is not enough. A shed that removes a small span leaves the prompt still over the
+    # trigger, and the old single pass returned that as a measurement that fit nothing. The gate now
+    # re-measures after each pass and keeps shedding until the prompt is under the threshold, or
+    # until a pass makes no progress. Each pass is logged with the number before and after it.
     shed_target = max(1, int(budget * keep_ratio))
     if settings.get("rollover") and settings.get("rolloverShed") and report["trigger"]:
-        kept, shed_report = shed_for_prompt(
-            str(data_dir), chat_id, shaped, settings, shed_target, user_id, message_tokens
-        )
-        report["shed_report"] = shed_report
-        report["shed"] = bool(shed_report.get("shed"))
+        counter = lambda m: int(message_tokens(m) * calibration)
+        max_passes = max(1, int(settings.get("shedMaxPasses") or SHED_MAX_PASSES))
+        keep_tail = max(0, int(protect_tail or 0))
+        passes: list[dict] = []
+        index_blocks: list[str] = []
+        current = list(shaped)
+
+        for attempt in range(1, max_passes + 1):
+            pass_before = projected_tokens(current, allowance, calibration)
+            kept, shed_report = shed_for_prompt(
+                str(data_dir),
+                chat_id,
+                current,
+                settings,
+                shed_target,
+                user_id,
+                counter,
+                protect_tail=keep_tail,
+            )
+            entry = {
+                "pass": attempt,
+                "before": pass_before,
+                "after": projected_tokens(kept, allowance, calibration),
+                "removed": shed_report.get("removed"),
+                "shed_messages": shed_report.get("shed_messages") or [],
+                "reason": shed_report.get("reason"),
+            }
+            if not shed_report.get("shed"):
+                passes.append(entry)
+                break
+
+            current = kept
+            if shed_report.get("index_block"):
+                index_blocks.append(shed_report["index_block"])
+            passes.append(entry)
+
+            if entry["after"] <= shed_target:
+                break
+            # A pass that does not shrink the prompt cannot be repeated for a different result.
+            # The protected tail is what usually stops progress, and that is the honest answer: the
+            # part of the prompt that cannot be shed is the part the turn is actually using.
+            if entry["after"] >= entry["before"]:
+                break
+
+        shed_messages = []
+        for p in passes:
+            shed_messages.extend(p.get("shed_messages") or [])
+
+        report["shed_report"] = {
+            "shed": any(p.get("removed") for p in passes),
+            "passes": passes,
+            # Kept on the report so the index the caller injects is the same index the reader and
+            # the tests look for.
+            "index_block": "\n\n".join(index_blocks),
+            # Aggregate across passes. Per-pass counts are the useful detail for the log, but the
+            # callers and the state writer read one number, not a list.
+            "removed": sum(int(p.get("removed") or 0) for p in passes),
+            "shed_messages": shed_messages,
+        }
+        report["shed_passes"] = passes
+        report["shed"] = bool(report["shed_report"]["shed"])
+        report["shed_target"] = shed_target
+
         if report["shed"]:
-            shaped = kept
-            report["tokens_after_shed"] = projected_tokens(shaped, allowance)
+            shaped = current
+            report["tokens_after_shed"] = projected_tokens(shaped, allowance, calibration)
 
             # Forced eviction only works if the evicted text is still reachable. The dump keeps it
             # verbatim on disk; the vector store is what makes it findable by meaning instead of by
             # id alone. Indexing here is what turns a shed from a deletion into a move.
-            if should_retrieve(settings):
+            shed_messages = []
+            for p in passes:
+                shed_messages.extend(p.get("shed_messages") or [])
+            if should_retrieve(settings) and shed_messages:
                 report["memory_indexed"] = index_chat_memory(
-                    data_dir, chat_id, shed_report.get("shed_messages") or [], settings
+                    data_dir, chat_id, shed_messages, settings
                 )
 
-            if shed_report.get("index_block"):
-                shaped, injection = inject_at_tail(shaped, shed_report["index_block"])
+            if index_blocks:
+                shaped, injection = inject_at_tail(shaped, "\n\n".join(index_blocks))
                 report["shed_injection"] = injection
-                report["tokens_after_shed"] = projected_tokens(shaped, allowance)
+                report["tokens_after_shed"] = projected_tokens(shaped, allowance, calibration)
 
-    projected = projected_tokens(shaped, allowance)
+    projected = projected_tokens(shaped, allowance, calibration)
     report["measured_after"] = projected
 
     # 3. Fit the output cap to the room left, which is the engine's own rule. Doing it here means
@@ -731,8 +818,36 @@ def prompt_gate(
     if report["refused"] and settings.get("safetyNet", True) and chat_id:
         from open_webui.utils.ex_reconstruct import minimum_prompt
 
+        # A pass that makes no progress means the part of the prompt that cannot be shed is already
+        # larger than the target. The gate must refuse here, not substitute a smaller prompt. When
+        # the safety net replaces an oversized request with an index stub, the request that goes out
+        # fits the window and no refusal is recorded, which is how a turn loses the user's actual
+        # message silently and the model answers nothing. Refusing is the honest outcome.
+        if not report.get("shed") and projected > shed_target:
+            report["refused"] = True
+            report["reason"] = "the part of the prompt that cannot be shed is already over the window"
+            report["over_by"] = max(0, projected - budget)
+            return shaped, report
+
+        # Scaled fit. Every number is a share of the window the engine enforces, not a constant
+        # written for a 256k model. Order: tool results, whole tool turns, history, then the tool
+        # definitions themselves, then refuse. The tool block is included because the engine counts
+        # it; a gate that ignores it reports a prompt that fits and still sends a request the
+        # engine refuses.
+        limits = scaled_limits(ceiling, settings, max_tokens, allowance)
+        shaped, fit_report = fit_request(shaped, limits, settings, chat_id, data_dir, lambda m: int(message_tokens(m) * calibration))
+        report["limits"] = limits
+        report["fit"] = fit_report
+        report["measured_after"] = fit_report["after"]
+        if not fit_report["fits"]:
+            report["refused"] = True
+            report["reason"] = "the prompt cannot be brought under the send limit"
+            report["over_by"] = fit_report["over_by"]
+            log.warning("EX fit refused chat=%s window=%d limit=%d buffer=%d answer_room=%d tool_block=%d over_by=%d order=%s", chat_id or "-", limits["window"], limits["send_limit"], limits["buffer"], limits["answer_room"], limits["tool_block"], fit_report["over_by"], fit_report["order"])
+            return shaped, report
+        report["tool_block_dropped"] = fit_report["tool_block_dropped"]
         minimum = minimum_prompt(data_dir, chat_id, shaped)
-        minimum_tokens = projected_tokens(minimum, allowance)
+        minimum_tokens = projected_tokens(minimum, allowance, calibration)
         fits = minimum_tokens + max(fit, ANSWER_ROOM_MIN) <= ceiling
         report["safety_net"] = {
             "parts": ["pinned head", "reconstruction block", "current request"],
@@ -744,5 +859,30 @@ def prompt_gate(
             report["safety_net_used"] = True
             shaped = minimum
             report["measured_after"] = minimum_tokens
+
+    # One line per request, so the numbers the gate used are readable after the fact. Without this
+    # the only thing the log showed was the engine's refusal, which is the number the gate never
+    # measured. Passes, tool results appended since the last measurement, the window actually used,
+    # and the threshold are all here.
+    log.info(
+        "EX gate chat=%s window=%d (configured %s, engine %s, using %s) threshold=%d "
+        "measured %d -> %d, tool block %d %s, appended since last measurement %d, "
+        "calibration %.3f, shed passes %d, target %d, refused=%s",
+        chat_id or "-",
+        ceiling,
+        report["configured"],
+        detected,
+        "engine" if report["window_capped_by_engine"] else "configured",
+        report["threshold"],
+        before,
+        report["measured_after"],
+        allowance,
+        report["tool_schema_source"],
+        since,
+        calibration,
+        len(report.get("shed_passes") or []),
+        int(budget * keep_ratio),
+        report["refused"],
+    )
 
     return shaped, report

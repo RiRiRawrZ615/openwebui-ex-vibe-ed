@@ -64,6 +64,24 @@ export type ExSettings = {
 	engineStatusEta: boolean;
 	engineStatusMaxAge: number;
 	engineLogPath: string;
+	// Mirror of the Python side. The gate numbers are shares of the window the engine
+	// enforces, so they must be readable from the UI as well as the resolver.
+	engineCalibration: boolean;
+	shedMaxPasses: number;
+	shedProtectTail: number;
+	sendBufferTokens: number;
+	dropToolsToFit: boolean;
+	dropToolResultsToFit: boolean;
+	dropToolTurnsToFit: boolean;
+	toolResultCapTokens: number;
+	enginePhaseStats: boolean;
+	agenticFlush: boolean;
+	flushEveryIteration: boolean;
+	retryGate: boolean;
+	// collapsed | list | expand. The grouping already exists in buildReasoningToken; this
+	// controls how the group is presented so a long agentic turn does not become a wall of
+	// separate thinking blocks.
+	thinkingDisplay: string;
 	steeringQueue: boolean;
 	drainSteeringAtBoundary: boolean;
 	steeringMode: string;
@@ -117,6 +135,19 @@ export const EX_DEFAULTS: ExSettings = {
 	backoffSeconds: 2.0,
 	resumeOnCrash: true,
 	exportFallback: true,
+	engineCalibration: true,
+	shedMaxPasses: 4,
+	shedProtectTail: 4,
+	sendBufferTokens: 1000,
+	dropToolsToFit: true,
+	dropToolResultsToFit: true,
+	dropToolTurnsToFit: true,
+	toolResultCapTokens: 12000,
+	enginePhaseStats: true,
+	agenticFlush: true,
+	flushEveryIteration: true,
+	retryGate: true,
+	thinkingDisplay: 'collapsed',
 	previousContext: true,
 	previousContextChars: 12000,
 	previousContextAsSystem: true,

@@ -102,17 +102,16 @@ def write_reconstruct(data_dir: Path | str, chat_id: str, messages: list[dict], 
 
 
 def reconstruct_block(data_dir: Path | str, chat_id: str, parts: dict, journal_ids: list | None = None) -> str:
-    """The system instruction pasted back in place of the evicted turns.
+    """The block put back in place of the evicted turns.
 
-    Deterministic. It says plainly that this is a new conversation and that the block is a system
-    instruction rather than something the user said, so the model does not answer the handoff as
-    though the user had asked it to acknowledge the handoff.
+    Data only. The block is injected with role=system by inject_at_tail, so the role already states
+    what it is; the three-sentence disclaimer was restating the role in prose on every turn. That was
+    prompt weight with no effect, and the model answering it was the symptom rather than the cause.
+    The marker stays because a later pass finds the block by it and replaces it instead of stacking a
+    second copy.
     """
     lines = [
         "[context slide]",
-        "This is a new conversation. Nothing from the previous window carries over except what is",
-        "written below. This block is a system instruction, not a message from the user; do not",
-        "answer it, use it and continue from the actual request that follows.",
         "",
         "Prior context:",
         (parts.get("prior_context") or "(none)")[:INLINE_CAP],

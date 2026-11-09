@@ -7,6 +7,7 @@
 	import ToolOutputFile from './ToolOutputFile.svelte';
 	import { resolveChatMessageToolCall } from '$lib/apis/chats';
 	import { settings } from '$lib/stores';
+	import { resolveExSettings } from '$lib/utils/exSettings';
 	import { toast } from 'svelte-sonner';
 
 	import Markdown from './Markdown.svelte';
@@ -14,6 +15,7 @@
 	import ContextCompactionLabel from './ContextCompactionLabel.svelte';
 	import {
 		buildOutputDisplayItems,
+		setThinkingDisplayMode,
 		type OutputDetailToken,
 		type OutputDisplayItem,
 		type OutputItem
@@ -30,6 +32,10 @@
 	export let commentToolbarId: string | undefined = undefined;
 	export let compactPreview = false;
 	export let renderMarkdown = true;
+
+	// Set before the display items are built, so the formatter sees the mode. Reading it here rather
+	// than threading it through ContentRenderer keeps the change to the two files that own it.
+	setThinkingDisplayMode(resolveExSettings($settings).thinkingDisplay);
 	export let editCodeBlock = true;
 	export let topPadding = false;
 	export let allowEmbeds = false;
@@ -140,6 +146,7 @@
 			title={displayItem.token.summary}
 			attributes={displayItem.token.attributes}
 			messageDone={done}
+			open={(displayItem.token as OutputDetailToken & { open?: boolean }).open ?? false}
 			className="mb-1.5"
 			buttonClassName="w-fit py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition"
 			chevronClassName="size-2.5"

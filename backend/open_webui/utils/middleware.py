@@ -95,6 +95,8 @@ from open_webui.utils.ex_context_window import (
     DEFAULT_TOOL_SCHEMA_TOKENS,
     detect_ceiling,
     estimate_tokens,
+    message_tokens,
+    record_engine_count,
     shape_request,
 )
 from open_webui.utils.ex_export import verbatim_digest
@@ -118,6 +120,9 @@ from open_webui.utils.ex_wiring import (
 )
 from open_webui.utils.ex_recovery import classify_error, decide, retry_permitted, write_checkpoint
 from open_webui.utils.ex_turns import buffer_for
+from open_webui.utils import ex_rollover
+from open_webui.utils.ex_flush import flush_prompt
+from open_webui.utils.ex_phase_stats import format_phase_line, phase_stats
 from open_webui.utils.files import (
     convert_markdown_base64_images,
     get_file_url_from_base64,
@@ -5902,6 +5907,12 @@ async def streaming_chat_response_handler(response, ctx):
                 all_tool_call_sources = []  # Accumulated sources across all iterations
                 user_message = get_last_user_message(form_data['messages'])
                 messages = list(form_data['messages'])
+                # Ids the last measurement already counted. Anything added after this point is a
+                # tool result for this turn, and the engine counts it, so the next measurement has
+                # to see it. The ids are what identify 'since the last measurement' once the gate
+                # has reshaped the list and the positions no longer match.
+                ex_measured_ids = {message.get('id') for message in messages}
+                ex_gate_retries = 0
 
                 # Check if citations are enabled for this model
                 citations_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get(
@@ -6553,6 +6564,110 @@ async def streaming_chat_response_handler(response, ctx):
 
                         new_form_data = normalize_messages_for_model(new_form_data)
 
+                        # EX pre-send guard. The gate runs once per turn, in process_chat_payload,
+                        # on the list before any tool result for this turn existed. Every result
+                        # appended since that measurement is part of the request that is about to be
+                        # sent, and the engine counts it. Measuring once per turn is what let a
+                        # request with a small first measurement grow past the window and be refused
+                        # mid turn. Re-measure here, on the list as it will actually go out, and do
+                        # not send a request the gate cannot fit.
+                        iteration_messages = new_form_data.get('messages') or []
+                        ex_send_ts = time.time()
+
+                        # EX agentic flush. When this is on, the list that goes out is rebuilt from
+                        # what this iteration needs, not carried forward. The memory of the earlier
+                        # turns is the journal on disk plus the index put back into the prompt, and
+                        # every tool result for this turn is capped so a single result cannot be
+                        # larger than the window. The engine is not being deceived; it is being sent
+                        # a new request, which is what a fresh prompt actually means.
+                        ex_flush_report = {'flushed': False}
+                        if ex_settings.get('agenticFlush') and tool_call_iterations > 0:
+                            iteration_messages, ex_flush_report = flush_prompt(
+                                metadata.get('chat_id', ''),
+                                iteration_messages,
+                                ex_settings,
+                                DATA_DIR,
+                                ex_rollover.last_reasoning_block(
+                                    DATA_DIR, metadata.get('chat_id', ''), ex_settings
+                                ),
+                                form_data.get('prefill') or [],
+                            )
+
+                        appended_since = [
+                            message
+                            for message in iteration_messages
+                            if message.get('id') not in ex_measured_ids
+                        ]
+                        ex_since_tokens = sum(message_tokens(message) for message in appended_since)
+                        ex_tool_tokens_iter = max(
+                            0, estimate_tokens(json.dumps(form_data.get('tools') or []))
+                        )
+                        # The reconstruction block is already in the list from the turn boundary. This
+                        # call measures and shapes; it must not rewrite the reconstruction file once
+                        # per tool result, so the block is not re-injected here.
+                        ex_gate_settings = {**ex_settings, 'reconstructBlock': False}
+                        shaped_iter, ex_gate_iter = prompt_gate(
+                            DATA_DIR,
+                            metadata.get('chat_id', ''),
+                            iteration_messages,
+                            ex_gate_settings,
+                            getattr(user, 'id', '') or '',
+                            (new_form_data.get('params') or {}).get('max_tokens'),
+                            ex_tool_tokens_iter,
+                            since_tokens=ex_since_tokens,
+                            protect_tail=max(
+                                ex_settings.get('shedProtectTail') or 4,
+                                len(appended_since),
+                            ),
+                        )
+                        metadata['exContextWindow'] = {
+                            **(metadata.get('exContextWindow') or {}),
+                            'iteration': tool_call_iterations,
+                            'gate': ex_gate_iter,
+                            'flush': ex_flush_report,
+                        }
+                        if ex_gate_iter.get('refused') and ex_settings.get('retryGate') and ex_gate_retries < int(ex_settings.get('maxIterations') or 8):
+                            # A refusal is not retried by sending the same request again. One tightened
+                            # attempt: tool definitions dropped, results capped harder, answer from the
+                            # journal. Capped by the loop guard's maxIterations.
+                            ex_gate_retries += 1
+                            tightened = {**ex_gate_settings, 'dropToolsToFit': True, 'dropToolResultsToFit': True, 'toolResultCapTokens': max(512, int((ex_settings.get('toolResultCapTokens') or 12000) * 0.25))}
+                            shaped_retry, ex_gate_retry = prompt_gate(DATA_DIR, metadata.get('chat_id', ''), iteration_messages, tightened, getattr(user, 'id', '') or '', (new_form_data.get('params') or {}).get('max_tokens'), 0, since_tokens=ex_since_tokens, protect_tail=max(ex_settings.get('shedProtectTail') or 4, len(appended_since)))
+                            metadata['exContextWindow'] = {**(metadata.get('exContextWindow') or {}), 'gateRetry': ex_gate_retry}
+                            if not ex_gate_retry.get('refused'):
+                                log.warning('EX gate retried once, iteration %d: tool block dropped, cap %d, measured %d', tool_call_iterations, tightened['toolResultCapTokens'], ex_gate_retry.get('measured_after'))
+                                new_form_data['messages'] = shaped_retry
+                                new_form_data['tools'] = []
+                                ex_measured_ids = {message.get('id') for message in shaped_retry}
+                            else:
+                                await emit_message_error('Context gate refused after one tightened retry. Nothing was sent.')
+                                break
+                        elif ex_gate_iter.get('refused'):
+                            error_content = (
+                                'Context gate refused this request before sending it. The prompt '
+                                f'measures {ex_gate_iter.get("measured_after")} tokens against a '
+                                f'{ex_gate_iter.get("ceiling")} token window, '
+                                f'{ex_gate_iter.get("over_by")} over, after '
+                                f'{ex_since_tokens} tokens of tool results were added since the last '
+                                'measurement. Nothing was sent. The gate sheds what it can; the part '
+                                'still inside the window is the part this turn is actually using.'
+                            )
+                            log.warning(
+                                'EX pre-send guard, iteration %d: %s',
+                                tool_call_iterations,
+                                error_content,
+                            )
+                            await emit_message_error(error_content)
+                            break
+                        new_form_data['messages'] = shaped_iter
+                        # The tool definitions are counted by the engine. If the fit had to drop
+                        # them to make room, the send has to match what was measured; otherwise the
+                        # gate reports a number the engine will not agree with, which is exactly the
+                        # disagreement that killed the turn.
+                        if ex_gate_iter.get('tool_block_dropped'):
+                            new_form_data['tools'] = []
+                        ex_measured_ids = {message.get('id') for message in shaped_iter}
+
                         # EX auto retry. Transport failures only, and only when nothing has
                         # streamed for this attempt. The decision is the same policy the settings
                         # tab reports; the partial output rule is enforced in the adapter.
@@ -6587,6 +6702,46 @@ async def streaming_chat_response_handler(response, ctx):
                                 current_usage = await stream_body_handler(res, new_form_data)
                             finally:
                                 log_model_usage(request, user, form_data['model'], current_usage)
+
+                                # The engine's own count for the list this gate measured is the only
+                                # way to know whether the projection matches the tokenizer. Pair the
+                                # two here, for the request that actually went out, and the next
+                                # measurement uses the ratio.
+                                ex_usage = current_usage if isinstance(current_usage, dict) else {}
+                                ex_record = record_engine_count(
+                                    DATA_DIR,
+                                    metadata.get('chat_id', ''),
+                                    ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens'),
+                                    ex_gate_iter.get('measured_after'),
+                                )
+                                if ex_record.get('recorded'):
+                                    log.info(
+                                        'EX calibration chat=%s engine=%d gate=%d ratio=%.3f samples=%d',
+                                        metadata.get('chat_id', ''),
+                                        int(ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens') or 0),
+                                        int(ex_gate_iter.get('measured_after') or 0),
+                                        float(ex_record.get('ratio') or 1.0),
+                                        int(ex_record.get('samples') or 0),
+                                    )
+
+                                if ex_settings.get('enginePhaseStats', True):
+                                    ex_phase = phase_stats(
+                                        ex_usage,
+                                        metadata.get('chat_id', ''),
+                                        tool_call_iterations,
+                                        ex_send_ts,
+                                        None,
+                                        ex_gate_iter,
+                                        ex_flush_report,
+                                        DATA_DIR,
+                                    )
+                                    metadata['exPhaseStats'] = ex_phase
+                                    log.info(
+                                        'EX phases chat=%s iter=%d %s',
+                                        metadata.get('chat_id', ''),
+                                        tool_call_iterations,
+                                        format_phase_line(ex_phase),
+                                    )
                         elif getattr(res, 'status_code', 200) >= 400:
                             await emit_message_error(get_message_error_content(get_response_error_detail(res)))
                             break

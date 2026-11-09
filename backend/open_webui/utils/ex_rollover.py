@@ -500,6 +500,27 @@ def shed_boundary(
             boundary -= 1
             continue
         break
+    # The message being answered is never shed. A boundary that crosses the current user turn
+    # deletes the question and leaves the model answering an index stub, which is how a turn loses
+    # the work. This is a property of the turn, not a configurable count, so it is pinned
+    # independently of protect_tail.
+    anchor = -1
+    for index, message in enumerate(messages):
+        if message.get("role") == "user" and not str(message.get("content") or "").startswith("[ex "):
+            anchor = index
+    # Shedding removes messages before the boundary, so the message being answered is lost when the
+    # anchor falls at or after it, not before it. The first version of this pin had the comparison
+    # backwards and stopped the shed on shapes where the anchor was safely inside the kept range.
+    # kept = messages[boundary:]. The removed region is everything before the boundary, so the
+    # message being answered is lost when the anchor is inside the removed region: anchor < boundary.
+    # The pin clamps, it does not refuse. Refusing here stopped the shed entirely on shapes where
+    # everything before the current user turn could legitimately be shed, which is the common agentic
+    # case: long tool history, short current turn. Clamping to the anchor sheds the older history and
+    # keeps the message being answered. If the kept range still does not fit after that, the gate
+    # refuses; that is the gate's job, not the boundary's.
+    if anchor >= 0:
+        boundary = min(boundary, anchor)
+
     return max(0, min(boundary, len(messages) - max(0, int(protect_tail))))
 
 
@@ -594,6 +615,7 @@ def shed_for_prompt(
     target_tokens: int,
     user_id: str = "",
     token_counter: Any = None,
+    protect_tail: int = 4,
 ) -> tuple[list[dict], dict]:
     """Move the oldest sections out of the prompt, keeping the verbatim copy on disk.
 
@@ -635,7 +657,10 @@ def shed_for_prompt(
         report["reason"] = "dump failed"
         return messages, report
 
-    boundary = shed_boundary(messages, target)
+    # The caller names the tail it must keep. On an agentic turn the thing being discussed is the
+    # tool exchange that has just happened, so the gate passes the count of messages appended since
+    # the last measurement and this refuses to shed into them.
+    boundary = shed_boundary(messages, target, token_counter=counter, protect_tail=protect_tail)
     if boundary <= 0:
         report["reason"] = "nothing to shed"
         return messages, report
