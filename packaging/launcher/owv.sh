@@ -656,8 +656,22 @@ if [[ "$OWV_START_WEBUI" == "1" ]]; then
     if port_in_use "$WEBUI_PORT" && ! fork_serving; then
         die "port $WEBUI_PORT is already serving something else. The fork must not attach to another instance."
     fi
-    if ! "$FORK_PY" -c 'import fastapi, uvicorn' >/dev/null 2>&1; then
-        die "fork venv is missing fastapi/uvicorn. Run pip install -r $FORK_BACKEND/requirements.txt in the fork venv, or start the fork venv first."
+    # The package is noarch and never builds an environment, so a venv can exist and still be missing
+    # most of the requirements. On the fleet boxes fastapi and uvicorn were present and chromadb was not,
+    # so this check passed, the engine loaded, and the webui died later on an unrelated import. Naming
+    # the first missing module is the whole point; a generic message sent the investigation to the wrong
+    # subsystem.
+    missing=""
+    for mod in fastapi uvicorn chromadb bs4 markdown sqlalchemy; do
+        "$FORK_PY" -c "import ${mod}" >/dev/null 2>&1 || missing="${missing:+$missing }${mod}"
+    done
+    if [[ -n "$missing" ]]; then
+        UV_BIN="$(command -v uv || true)"
+        if [[ -z "$UV_BIN" && -x "$OWV_HOME/.local/bin/uv" ]]; then
+            UV_BIN="$OWV_HOME/.local/bin/uv"
+        fi
+        die "fork venv is missing: ${missing}. Fill it with:
+     ${UV_BIN:-pip} install -r $FORK_BACKEND/requirements.txt --python $FORK_PY"
     fi
     # A stale build is served happily by the backend and looks like a broken feature in the UI.
     # Check it here so the reason is stated instead of discovered in a browser.
