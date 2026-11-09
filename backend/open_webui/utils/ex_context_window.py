@@ -204,17 +204,116 @@ def messages_tokens(messages: Iterable[dict]) -> int:
     return sum(message_tokens(message) for message in messages or [])
 
 
-def projected_tokens(messages: Iterable[dict], tool_schema_tokens: int = 0) -> int:
+# --------------------------------------------------------------------------------------
+# engine calibration
+# --------------------------------------------------------------------------------------
+
+# The estimate is a character ratio; the engine is a tokenizer. Measured on the request this chat
+# was refused on 2026-11-09: the gate projected 224174 tokens for the same message list the engine
+# counted as 276348. That gap is not noise, it is the ratio, and it is large enough to turn a
+# request the gate said it fit into a hard refusal.
+#
+# Every request the engine answers reports its own prompt_tokens, so the gate can compare its
+# number with the engine's number for the same list and carry the ratio forward for that chat.
+# Clamped at both ends: one odd turn must not permanently inflate the estimate, and the ratio can
+# never go below 1.0 because that would mean the gate is over-counting.
+CALIBRATION_DIR = "ex_calibration"
+CALIBRATION_FLOOR = 1.0
+CALIBRATION_CEILING = 1.6
+CALIBRATION_ROLLING = 8
+
+
+def calibration_factor_value(calibration: Any) -> float:
+    try:
+        return max(CALIBRATION_FLOOR, min(CALIBRATION_CEILING, float(calibration or 1.0)))
+    except (TypeError, ValueError):
+        return CALIBRATION_FLOOR
+
+
+def _calibration_path(data_dir: Path | str, chat_id: str) -> Path:
+    return Path(str(data_dir)) / CALIBRATION_DIR / f"{chat_id}.json"
+
+
+def read_calibration(data_dir: Path | str, chat_id: str) -> float:
+    """The stored ratio for this chat, or 1.0 when nothing has been measured yet."""
+    if not chat_id:
+        return CALIBRATION_FLOOR
+    try:
+        state = json.loads(_calibration_path(data_dir, chat_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return CALIBRATION_FLOOR
+    samples = [float(s) for s in (state.get("samples") or []) if isinstance(s, (int, float))]
+    if not samples:
+        return CALIBRATION_FLOOR
+    return calibration_factor_value(sum(samples) / len(samples))
+
+
+def record_engine_count(
+    data_dir: Path | str,
+    chat_id: str,
+    engine_tokens: Any,
+    gate_tokens: Any,
+) -> dict:
+    """Record the engine's count against the gate's count for the same request.
+
+    Only a pair from the same request is meaningful, so the caller passes the gate's own
+    measurement for the list that was sent. A refused request has no engine number, and a streamed
+    request reports usage only when the stream finishes.
+    """
+    if not chat_id:
+        return {"recorded": False, "reason": "no chat id"}
+    try:
+        engine = int(engine_tokens or 0)
+        measured = int(gate_tokens or 0)
+    except (TypeError, ValueError):
+        return {"recorded": False, "reason": "unreadable counts"}
+    if engine <= 0 or measured <= 0:
+        return {"recorded": False, "reason": "no engine count for this request"}
+
+    path = _calibration_path(data_dir, chat_id)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    samples = (state.get("samples") or [])[-(CALIBRATION_ROLLING - 1):]
+    samples.append(round(max(CALIBRATION_FLOOR, min(CALIBRATION_CEILING, engine / measured)), 4))
+    state["samples"] = samples
+    state["last_engine"] = engine
+    state["last_gate"] = measured
+    state["ratio"] = round(sum(samples) / len(samples), 4)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError as exc:
+        return {"recorded": False, "reason": f"write failed: {exc}"}
+    return {
+        "recorded": True,
+        "ratio": state["ratio"],
+        "samples": len(samples),
+        "path": str(path),
+    }
+
+
+def projected_tokens(
+    messages: Iterable[dict],
+    tool_schema_tokens: int = 0,
+    calibration: float = 1.0,
+) -> int:
     """What the engine will actually count for this request.
 
     The message list plus the tool definitions. The tool block is the second thing the estimate never
     saw, and it is a real part of every request with tools active.
+
+    The calibration is the engine's own ratio for this chat, measured from requests it answered.
+    A character ratio cannot match a real tokenizer on tool JSON and code, so a projection that
+    lands just under the window still sends a request the engine refuses. Applying the measured
+    ratio here is what makes the gate's number the engine's number.
     """
     try:
         allowance = max(0, int(tool_schema_tokens or 0))
     except (TypeError, ValueError):
         allowance = 0
-    return messages_tokens(messages) + allowance
+    return int((messages_tokens(messages) + allowance) * calibration_factor_value(calibration))
 
 
 def fit_max_tokens(
