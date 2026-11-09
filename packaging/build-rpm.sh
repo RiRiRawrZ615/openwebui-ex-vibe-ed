@@ -56,11 +56,13 @@ mkdir -p "$BUILDDIR"/SPECS "$BUILDDIR"/SOURCES "$BUILDDIR"/BUILD "$BUILDDIR"/RPM
 
 # The build dir lives under packaging/, which is itself part of the payload, so the archive was
 # writing into itself and came out empty. The tree being packed is excluded from its own archive.
+# CHANGELOG.md was not in the archive. env.py reads it at import time and its except branch calls
+# pkgutil.get_data, which also throws when the file is absent, so a packaged install died during
+# import and the launcher reported only "webui exited during startup". The file is now shipped and
+# the code guards the absence, both.
+# A comment placed inside a line continuation is not a comment: the continuation consumed it and tar
+# received the words as arguments, which is the "must specify one of -Acdtrux" failure.
 tar -C "$REPO" --exclude=.git --exclude="$BUILDDIR" --transform 's#^#openwebvibes/#' \
-    # CHANGELOG.md was not in the archive. env.py reads it at import time and its except branch calls
-    # pkgutil.get_data, which also throws when the file is absent, so a packaged install died during
-    # import and the launcher reported only "webui exited during startup". The file is now shipped and
-    # the code guards the absence, both.
     -cf "$BUILDDIR/SOURCES/openwebvibes.tar.gz" backend build packaging tests CHANGELOG.md
 
 cp "$ROOT/openwebvibes.spec" "$BUILDDIR/SPECS/openwebvibes.spec"
