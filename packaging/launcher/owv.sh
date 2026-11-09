@@ -141,17 +141,13 @@ die()  { printf '[OWV][ERROR] %s\n' "$*" >&2; exit 1; }
 # Aliases for the shell rc (same shapes as the existing openwebui pair)
 # -----------------------------
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-    shopt -s expand_aliases
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    alias owv="bash $here/owv.sh"
-    alias owv-tmux="tmux new-session -d -s owv \"cd $here && ./owv.sh\""
-    # Scope, ownership, and self-preservation live in owv-kill.sh. One instance per call, one
-    # code copy per scope, and a refusal when the caller is standing inside the instance being
-    # pointed at. --force is the deliberate escape hatch.
-    alias kill-owv="bash $here/owv-kill.sh"
-    alias kill-owv-dirty="bash $here/owv-kill.sh --force"
-    alias kill-owv-dev="bash $here/owv-kill.sh --dev"
-    alias kill-owv-dev-dirty="bash $here/owv-kill.sh --dev --force"
+    # One source of the alias definitions: owv-aliases.sh. Start, stop, watch, status. The kill
+    # path is scoped, checks ownership, and refuses to take down the instance the calling shell is
+    # standing inside, which is the failure that keeps happening when a kill sweeps by name.
+    if [[ -f "$here/owv-aliases.sh" ]]; then
+        source "$here/owv-aliases.sh"
+    fi
     return 0 2>/dev/null
 fi
 

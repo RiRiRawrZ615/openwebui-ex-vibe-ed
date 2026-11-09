@@ -9,6 +9,44 @@ VERSION="${OWV_RPM_VERSION:-1.0.0}"
 RELEASE="${OWV_RPM_RELEASE:-1.rc1}"
 BUILDDIR="${OWV_RPM_BUILDDIR:-$ROOT/rpmbuild}"
 
+# OOM guard, before anything is written. A build killed mid-archive leaves a half-written tarball in
+# BUILDDIR and the next build inherits it, which is how one failed build turns into a run of empty
+# packages. Headroom counts free swap as well as free memory because zram is what is actually
+# available on a machine that is already holding a loaded model.
+MIN_FREE_MIB="${OWV_BUILD_MIN_FREE_MIB:-4096}"
+SWAP_FILE="${OWV_BUILD_SWAP:-/var/tmp/owv-build-swap}"
+SWAP_ADDED=0
+
+headroom_mib() {
+    free -b | awk '/^Mem:/ {a=$7} /^Swap:/ {s=$4} END {print int((a+s)/1048576)}'
+}
+
+release_swap() {
+    if [ "$SWAP_ADDED" = "1" ]; then
+        swapoff "$SWAP_FILE" 2>/dev/null || true
+        rm -f "$SWAP_FILE" 2>/dev/null || true
+        echo "[guard] temporary swap released"
+    fi
+}
+trap release_swap EXIT
+
+have="$(headroom_mib)"
+if [ "${OWV_BUILD_NO_SWAP:-0}" != "1" ] && [ "${have:-0}" -lt "$MIN_FREE_MIB" ]; then
+    need=$((MIN_FREE_MIB - have))
+    echo "[guard] headroom ${have} MiB, floor ${MIN_FREE_MIB} MiB; trying ${need} MiB temporary swap"
+    if command -v sudo >/dev/null 2>&1 && sudo truncate -s "${need}M" "$SWAP_FILE" 2>/dev/null \
+        && sudo mkswap "$SWAP_FILE" >/dev/null 2>&1 && sudo swapon "$SWAP_FILE" 2>/dev/null; then
+        SWAP_ADDED=1
+        have="$(headroom_mib)"
+        echo "[guard] headroom now ${have} MiB"
+    else
+        echo "[ERROR] headroom below the floor and no way to add swap. Stop the engine, or lower" >&2
+        echo "        OWV_BUILD_MIN_FREE_MIB, or build with OWV_BUILD_NO_SWAP=1 and accept the risk." >&2
+        exit 1
+    fi
+fi
+echo "[guard] headroom ${have} MiB (floor ${MIN_FREE_MIB} MiB)"
+
 if [ ! -d "$REPO/build" ]; then
     echo "[ERROR] no prebuilt frontend at $REPO/build. Run npm run build first." >&2
     exit 1

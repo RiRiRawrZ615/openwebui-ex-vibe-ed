@@ -33,6 +33,7 @@ install -d -m 755 "%{buildroot}/usr/lib/openwebvibes/launcher"
 install -d -m 755 "%{buildroot}/usr/bin"
 install -d -m 755 "%{buildroot}/etc/openwebvibes"
 install -d -m 755 "%{buildroot}/etc/s6-overlay/s6-rc.d/openwebvibes"
+install -d -m 755 "%{buildroot}/etc/profile.d"
 install -d -m 755 "%{buildroot}/usr/lib/systemd/system"
 
 cp -a backend "%{buildroot}/usr/lib/openwebvibes/"
@@ -40,10 +41,14 @@ cp -a build "%{buildroot}/usr/lib/openwebvibes/"
 
 install -m 755 packaging/launcher/owv.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv.sh"
 install -m 755 packaging/launcher/owv-packaged.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-packaged.sh"
+install -m 755 packaging/launcher/owv-kill.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-kill.sh"
+install -m 755 packaging/launcher/owv-aliases.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-aliases.sh"
+install -m 755 packaging/launcher/owv-status.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-status.sh"
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
 ln -s ../lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
 
 install -m 644 packaging/etc/openwebvibes/owv.conf "%{buildroot}/etc/openwebvibes/owv.conf"
+install -m 644 packaging/profile.d/openwebvibes.sh "%{buildroot}/etc/profile.d/openwebvibes.sh"
 install -m 644 packaging/s6/openwebvibes/type "%{buildroot}/etc/s6-overlay/s6-rc.d/openwebvibes/type"
 install -m 755 packaging/s6/openwebvibes/run "%{buildroot}/etc/s6-overlay/s6-rc.d/openwebvibes/run"
 install -m 644 packaging/systemd/openwebvibes.service "%{buildroot}/usr/lib/systemd/system/openwebvibes.service"
@@ -58,6 +63,7 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/openwebvibes
 /usr/bin/owv
 /etc/openwebvibes/owv.conf
+/etc/profile.d/openwebvibes.sh
 /etc/s6-overlay/s6-rc.d/openwebvibes
 /usr/lib/systemd/system/openwebvibes.service
 

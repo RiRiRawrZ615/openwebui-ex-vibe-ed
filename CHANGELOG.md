@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.1.2-rc1] - 2026-11-08
+
+Every item below came from a run, not from reading the code [1].
+
+### Added
+
+- **Journal tool registered.** `manifest.json` now carries `ex_journal` with `index`, `read` and
+  `reconstruct`, so the pointer the prompt prints resolves to a callable tool in a live chat. Before
+  this the code path was sound and the tool was invisible, because `builtin_registry` reads only the
+  manifest.
+- **Reconstruction as a file.** New module `ex_reconstruct.py` writes the minimum set needed to
+  restart a conversation in a fresh window (prior context, the last full reasoning loop, the last
+  response, the last user message) as plain text every turn, and the gate injects it as a system
+  instruction, one copy, stating plainly that the turn reads as a new conversation [1].
+- **Safety net.** When the gate cannot fit, it rebuilds the minimum set (pinned head,
+  reconstruction block, current request) and serves that instead of refusing. Run: 20 long user
+  turns measured 5565 against a 1488 budget, refused, minimum measured 231, so the net replaced the
+  refusal with a servable prompt [1].
+- **Shell aliases shipped in the package.** Start, stop, watch and status for a packaged install:
+  `launch-owv`, `owv`, `owv-tmux`, `restart-owv`, `kill-owv`, `kill-owv-dirty`, `kill-owv-ui`,
+  `owv-status`, `log-owv`, `tail-eng`, `tail-owv`, loaded for interactive login shells through
+  `/etc/profile.d/openwebvibes.sh`. `log-oui` is renamed to `log-owv`, and the tails now point at the
+  sinks this launcher actually writes instead of three files it never fed. No dev scope is packaged;
+  a packaged install is one instance.
+
+### Fixed
+
+- **The slide was unreachable in a live request.** `ex_slide` and `ex_prompt_assembler` had zero call
+  sites in `backend/`; the live path measured, trimmed, shed and then refused, which is why a growing
+  agentic chat still died. The gate now calls `slide` per turn outside the lock with a writer that
+  appends, and reports `slide`, `slid` and `tokens_after_slide` [1].
+- **A slide that fired crashed.** `ex_slide` handed the writer a raw message dict while
+  `append_journal` reads `e['id']`, `e['turn']`, `e['ts']` and `e['summary']`; the forced run raised
+  `KeyError: 'id'`. The harness never saw it because it ran at a window that never crossed the slide
+  point [1].
+- **User turns could not be evicted.** `evict_to_fit` shed only assistant and tool turns, so a chat
+  whose growth is user text had nothing it was allowed to shed and refusal was the only move left.
+  Now oldest-first user eviction is allowed, and the current request is protected by object identity
+  so deletions before it cannot move the guard [1].
+- **Two calibrations on one prompt.** `estimate_tokens` used `len // 4` while the gate measures at
+  3.4 characters per token, which let a module declare a budget met that the gate then measured as
+  over. It now uses the gate's calibration [1].
+- **Truncated calls were being read as loops.** An unparseable arguments string counted as an empty
+  call and, past the threshold, steered the model to re-run the same cut payload. There is now a
+  separate `truncated` verdict that tells the model to shorten the call or answer in text [1].
+- **Steering notes arrived as a user turn.** `drain_steering` inserted the guard note as user text,
+  which made the model answer as though the user had said it. It inserts as system now [1].
+- **Stats row.** The context rollover chip is removed; it counted sheds while the shed path often no
+  longer ran, and a per-request number under an always-on marker is not a signal [1]. Token figures
+  and rate chips now both respect `statsTokenSource`, so only one counter family renders; the
+  duplicate selector in the composer menu is gone [1].
+- **leanrea budget note.** `_budget()` appended a line to every tool result the model read, telling it
+  to trim output and stop re-verifying. That is an instruction arriving inside tool output, and it is
+  how an agent that was never told its window started shortening its own reasoning and answers. It is
+  accounting-only and defaults off behind `CONTEXT_BUDGET_NOTES` [1].
+
+### Tests
+
+97 checks across four suites pass in the release tree: `dev_check` (15), `dev_harness` (10),
+`dev_vet` (35), `dev_vet2` (37) [1]. Gate run at window 4000: 4081 measured before, slid, 719 after,
+`refused=False` [1].
+
+## [1.1.0-rc1] - 2026-11-08
+
+### Added
+
+- **Context gate.** A request is measured after tool results are materialized, so the count matches
+  what the engine bills and the rollover point fires instead of the prompt growing until the engine
+  answers 400.
+- **Shed order as a safety property.** Verbatim digest first, then the boundary, then the prompt keeps
+  an addressable index plus the last reasoning block; the evicted span goes to the vector store so
+  evicted text is findable by meaning and not only by id. The index is injected at the tail so the KV
+  prefix survives, and the boundary never splits a tool call from its result.
+- **Window is the smaller of the configured value and the engine handshake**, so a 128k machine cannot
+  plan for 262144. Answer room is a ratio of the window (`RESERVE_MAX_RATIO` 0.20), so it scales at
+  32k, 128k, 256k and above. `fit_max_tokens` is computed before send, so a request that would be
+  refused is refused locally with a readable reason instead of an engine 400 mid-turn.
+- **Scoped stop script.** `owv-kill.sh` resolves one instance per call, kills only pids owned by this
+  user that belong to that scope, and refuses to take down the instance the calling shell is standing
+  inside. `--force` is the deliberate escape hatch. This replaced a `pkill -9` alias that swept by
+  process name and by shared ports, which is how a live instance got taken down by accident.
+
 ## [1.0.0-rc1] - 2026-11-07
 
 This fork's own release notes. The upstream `CHANGELOG.md` entries below this section describe
@@ -15,8 +97,8 @@ read this file through `/api/changelog`, so the fork section appears first.
 
 ### Added
 
-- **Fork changelog.** The release notes panel now shows this fork's features instead of upstream's. The update check reports which repository the version number came from.
-- **Updater repointed.** `OWV_UPDATE_REPO` defaults to `RiRiRawrZ615/openwebui-ex-vibe-ed`, so an "update available" describes code that can actually be fetched. The check is cached for ten minutes because the layout calls it on every page load, a stale answer is labelled as stale, and the timeout is 3 seconds instead of 1 so a cold connection still answers.
+- **Fork changelog.** The release notes panel now shows this fork's features instead of upstream's. The version check reports which repository the version number came from.
+- **Version check repointed.** `OWV_UPDATE_REPO` defaults to `RiRiRawrZ615/openwebui-ex-vibe-ed`, so an "update available" describes code that can actually be fetched. The check is cached for ten minutes because the layout calls it on every page load, a stale answer is labelled as stale, and the timeout is 3 seconds instead of 1 so a cold connection still answers. It is a report only: nothing is downloaded, installed, or restarted. Updating this fork means installing a newer RPM and restarting the instance.
 - **Engine status row.** Phase, tokens, budget, tokens per second, elapsed seconds, and an ETA computed as `(budget - tokens) / speed` with no model call. Reads the engine log through the route, with a 3 second refresh floor. Cancelled turns that print no speed are handled.
 - **Detected context ceiling.** The engine's real window comes from the handshake the launcher writes at startup, cached for five minutes with the file mtime as part of the check, so an engine restart with a different window invalidates it. Reported alongside the budget: when the ceiling and the window disagree, that is shown rather than smoothed over.
 - **Over-ceiling reporting.** The engine refuses an over-window request outright and never truncates, so a request past the ceiling is reported before it goes out instead of arriving as a mid-turn error.

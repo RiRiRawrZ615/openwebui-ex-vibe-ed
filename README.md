@@ -166,7 +166,14 @@ See the [ecosystem documentation](https://docs.openwebui.com/ecosystem/) for det
 
 ### Troubleshooting and Updates
 
-See the [troubleshooting guide](https://docs.openwebui.com/troubleshooting/) for connection issues and the [updating guide](https://docs.openwebui.com/getting-started/updating) to update your installation.
+See the [troubleshooting guide](https://docs.openwebui.com/troubleshooting/) for connection issues.
+
+There is no updater in this build. The in-app version check only reports the latest tag from
+`RiRiRawrZ615/openwebui-ex-vibe-ed`; it does not download, install, or restart anything, and the
+upstream updating guide describes pip and Docker paths that a packaged install does not use. To
+update, install a newer RPM (`dnf upgrade ./openwebvibes-<version>.noarch.rpm`), then restart the
+instance with `launch-owv` or `restart-owv`. The fork's own release notes are in
+[CHANGELOG.md](CHANGELOG.md), and the What's new panel reads them from `/api/changelog`.
 
 ### Documentation
 
