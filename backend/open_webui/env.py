@@ -182,10 +182,10 @@ try:
 
 except Exception:
     # The fallback was not safe. pkgutil.get_data raises FileNotFoundError when the file is not in the
-    # package, and the RPM archive carries backend, build, packaging and tests but not CHANGELOG.md, so
-    # every packaged install hit this branch and the except clause itself threw. The module import died,
-    # the webui exited during startup, and the launcher reported only "webui exited during startup".
-    # A missing changelog is a missing page in the About tab, not a reason to refuse to boot.
+    # package, and the RPM archive carried backend, build, packaging and tests but not CHANGELOG.md, so
+    # every packaged install hit this branch and the except clause itself threw: the module import died
+    # and the launcher reported only "webui exited during startup". A missing changelog is a missing
+    # page in the About tab, not a reason to refuse to boot.
     try:
         changelog_content = (pkgutil.get_data('open_webui', 'CHANGELOG.md') or b'').decode()
     except Exception:
