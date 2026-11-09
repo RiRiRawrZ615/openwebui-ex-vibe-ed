@@ -662,23 +662,35 @@ if [[ "$OWV_START_WEBUI" == "1" ]]; then
     # A stale build is served happily by the backend and looks like a broken feature in the UI.
     # Check it here so the reason is stated instead of discovered in a browser.
     if [[ -d "$FORK_DIR/build" ]]; then
-        # No `local` here: this block sits at top level, not inside a function, and bash
-        # rejects `local` outside a function with "can only be used in a function". Under
-        # set -e that aborted the launcher immediately after the engine had loaded, which
-        # then triggered the shutdown trap. The symptom was a long model load followed by a
-        # bare "shutting down services" and no server, which reads like an engine fault and
-        # is not: it is a shell error in the launcher itself.
-        newer="$(find "$FORK_DIR/src" -newer "$FORK_DIR/build/index.html" -type f 2>/dev/null | head -1)"
-        if [[ -n "$newer" ]]; then
-            warn "frontend build is older than the sources (e.g. ${newer#$FORK_DIR/})."
-            if [[ "${OWV_REQUIRE_FRESH_BUILD:-0}" == "1" ]]; then
-                # Set by owv-dev.sh. In a dev run a stale bundle is not a cosmetic problem: a
-                # correct fix looks broken, and the usual response is to rewrite code that was
-                # already right. Refuse instead of serving a bundle that cannot contain the change.
-                die "OWV_REQUIRE_FRESH_BUILD=1 and the build is stale. Rebuild first:
+        # The packaged install ships build but not src, so this find had nothing to walk. Under
+        # `set -Eeuo pipefail` the pipeline's status is find's status, not head's, so a missing src
+        # directory made the assignment fail, errexit fired, and the cleanup trap tore down the engine
+        # and the terminal that had just come up. On a git checkout src exists, so this only shows on
+        # machines installed from the RPM. Both guards are needed: the directory check and `|| true`
+        # inside the substitution.
+        if [[ -d "$FORK_DIR/src" ]]; then
+            # No `local` here: this block sits at top level, not inside a function, and bash
+            # rejects `local` outside a function with "can only be used in a function". Under
+            # set -e that aborted the launcher immediately after the engine had loaded, which
+            # then triggered the shutdown trap. The symptom was a long model load followed by a
+            # bare "shutting down services" and no server, which reads like an engine fault and
+            # is not: it is a shell error in the launcher itself.
+            newer="$(find "$FORK_DIR/src" -newer "$FORK_DIR/build/index.html" -type f 2>/dev/null | head -1 || true)"
+            if [[ -n "$newer" ]]; then
+                warn "frontend build is older than the sources (e.g. ${newer#$FORK_DIR/})."
+                if [[ "${OWV_REQUIRE_FRESH_BUILD:-0}" == "1" ]]; then
+                    # Set by owv-dev.sh. In a dev run a stale bundle is not a cosmetic problem: a
+                    # correct fix looks broken, and the usual response is to rewrite code that was
+                    # already right. Refuse instead of serving a bundle that cannot contain the change.
+                    die "OWV_REQUIRE_FRESH_BUILD=1 and the build is stale. Rebuild first:
      (cd $FORK_DIR && NODE_OPTIONS=--max-old-space-size=8192 npm run build)"
+                fi
+                warn "the UI will show the previous bundle. Rebuild with: (cd $FORK_DIR && npm run build)"
             fi
-            warn "the UI will show the previous bundle. Rebuild with: (cd $FORK_DIR && npm run build)"
+        else
+            # Packaged installs carry build only. Reporting the skip is better than a check that
+            # cannot run, because a check that cannot run is what took down the engine here.
+            log "no src directory at $FORK_DIR/src; build cannot be compared against sources, staleness check skipped"
         fi
     else
         warn "no frontend build at $FORK_DIR/build. The server will answer the API only."
