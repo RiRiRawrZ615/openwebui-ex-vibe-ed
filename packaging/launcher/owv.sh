@@ -317,7 +317,42 @@ OWV_BIN_DIRS=(
     "/usr/bin"
 )
 
-LLAMA_BIN="$(resolve_binary "${OWV_LLAMA_BIN:-}" llama-server llama-server-cuda llama-server-vulkan ggml || true)"
+# A binary chosen in the setup tab is stored in DATA_DIR/ex_binaries.json by the backend. Read it
+# here so the choice is the thing that runs; before this the tab could only validate a path, so the
+# selection was displayed once and then forgotten, and the engine started from whatever the launcher
+# found on its own.
+stored_binary() {
+    local component="$1"
+    [[ -f "$DATA_DIR/ex_binaries.json" ]] || return 1
+    "$FORK_PY" - "$DATA_DIR/ex_binaries.json" "$component" <<'PYSTORED'
+import json, os, sys
+try:
+    raw = json.loads(open(sys.argv[1], encoding="utf-8").read())
+except (ValueError, OSError):
+    print(""); raise SystemExit(0)
+path = str(raw.get(sys.argv[2]) or "")
+print(path if path and os.access(path, os.X_OK) else "")
+PYSTORED
+}
+
+# Same order as PRECEDENCE in utils/ex_discover.py, so the setup tab reports what this script will
+# actually start: env override, stored choice, PATH, then the profile, then known build directories.
+LLAMA_BIN=""
+LLAMA_BIN_SOURCE=""
+if [[ -n "${OWV_LLAMA_BIN:-}" ]]; then
+    LLAMA_BIN="${OWV_LLAMA_BIN}"
+    LLAMA_BIN_SOURCE="env"
+else
+    STORED_BIN="$(stored_binary llamacpp || true)"
+    if [[ -n "$STORED_BIN" ]]; then
+        LLAMA_BIN="$STORED_BIN"
+        LLAMA_BIN_SOURCE="stored"
+    fi
+fi
+if [[ -z "$LLAMA_BIN" ]]; then
+    LLAMA_BIN="$(resolve_binary "" llama-server llama-server-cuda llama-server-vulkan ggml || true)"
+    [[ -n "$LLAMA_BIN" ]] && LLAMA_BIN_SOURCE="path"
+fi
 
 # -----------------------------
 # Model resolution. Refuse on ambiguity instead of guessing.
@@ -637,15 +672,18 @@ else
             PROFILE="$(profile_for_model "$MODEL" || true)"
             if [[ -n "$PROFILE" ]]; then
                 # A profile can name its own binary, and for the ternary builds that is the only
-                # path that works. An explicit OWV_LLAMA_BIN still wins so a deliberate override is
-                # not silently replaced, but a profile named for this model should not be ignored.
+                # path that works. It applies when nothing more specific was chosen: an env override
+                # or a binary stored in the setup tab both win over it, since those are explicit
+                # decisions made after the profile was written.
                 PROFILE_BIN="$(profile_json_field "$PROFILE" llama_bin)"
-                if [[ -n "$PROFILE_BIN" && -x "$PROFILE_BIN" && -z "${OWV_LLAMA_BIN:-}" ]]; then
+                if [[ -n "$PROFILE_BIN" && -x "$PROFILE_BIN" && -z "${OWV_LLAMA_BIN:-}" && -z "${STORED_BIN:-}" ]]; then
                     LLAMA_BIN="$PROFILE_BIN"
+                    LLAMA_BIN_SOURCE="profile"
                 fi
                 log "profile applied: $PROFILE"
             fi
-            [[ -n "$LLAMA_BIN" ]] || die "llama.cpp binary not found. Set OWV_LLAMA_BIN or put llama-server on PATH."
+            [[ -n "$LLAMA_BIN" ]] || die "llama.cpp binary not found. Set OWV_LLAMA_BIN, choose one in the setup tab, or put llama-server on PATH. The search order is env, stored choice, PATH, profile, then known build directories."
+            log "llama binary: $LLAMA_BIN (source: ${LLAMA_BIN_SOURCE:-none})"
             mapfile -t LLAMA_ARGS < <(build_llama_args "$PROFILE")
             log "starting llama.cpp via $LLAMA_BIN"
             setsid "$LLAMA_BIN" -m "$MODEL" --host 127.0.0.1 --port "$API_PORT" \

@@ -453,8 +453,19 @@ async def get_anthropic_request_target(request: Request, form_data: dict, user: 
         models = request.app.state.OPENAI_MODELS
 
     model = models.get(model_id)
-    if not model or 'urlIdx' not in model:
-        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.MODEL_NOT_FOUND())
+    
+    # The provider dict only holds models a connected engine reports. A catalog row created
+    # by the launcher lives in the merged list, so that is where it has to be resolved.
+    if not model or model.get('urlIdx') is None:
+        from open_webui.utils.models import get_all_models as merged_model_list
+    
+        merged = await merged_model_list(request, user=user)
+        model = next((m for m in merged if m.get('id') == model_id), None)
+    
+    if not model or model.get('urlIdx') is None:
+        raise HTTPException(
+            status_code=404, detail=ERROR_MESSAGES.MODEL_NOT_FOUND(model_id)
+        )
 
     url, key, api_config = await get_openai_connection(model['urlIdx'])
     prefix_id = api_config.get('prefix_id')

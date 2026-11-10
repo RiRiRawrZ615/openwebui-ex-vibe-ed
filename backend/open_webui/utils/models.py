@@ -91,6 +91,43 @@ async def get_all_base_models(request: Request, user: UserModel = None):
     return function_models + openai_models + ollama_models
 
 
+def _catalog_display_name(custom_model, handshake=None, base_model=None):
+    """Fallback label for a catalog row.
+
+    Profiles on lp10 carry no name field, so a row can be listed with an empty label, and the
+    frontend then reports Model "" was not found. The engine entry, then the model path the
+    launcher recorded in the handshake, are the next usable sources.
+    """
+    if custom_model.name:
+        return custom_model.name
+    if base_model and base_model.get("name"):
+        return base_model["name"]
+    path = (handshake or {}).get('model') or ''
+    stem = path.split('/')[-1].rsplit('.', 1)[0]
+    return stem or custom_model.id
+
+
+def _catalog_url_index(request, backend=None, base_model=None):
+    """Connection index a catalog row can be served from.
+
+    Completions route through urlIdx, so a row without one can never be answered even when it
+    is listed. The engine the launcher wrote in the handshake is matched against the configured
+    connections, and a single connection is unambiguous.
+    """
+    if base_model and base_model.get('urlIdx') is not None:
+        return base_model['urlIdx']
+
+    urls = getattr(request.app.state, 'OPENAI_API_BASE_URLS', None) or []
+    if not urls:
+        return None
+
+    needle = (backend or '').lower()
+    for i, url in enumerate(urls):
+        if needle and needle in str(url).lower():
+            return i
+    return 0 if len(urls) == 1 else None
+
+
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
     config = await Config.get_many(
         'models.base_models_cache',
@@ -259,11 +296,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                 info['params'] = public_model_params(info.get('params') or {})
                 models.append({
                     'id': custom_model.id,
-                    'name': custom_model.name,
+                    'name': _catalog_display_name(custom_model, handshake),
                     'object': 'model',
                     'created': custom_model.created_at,
                     'owned_by': fork_backend,
                     'connection_type': fork_backend,
+                    'urlIdx': _catalog_url_index(request, fork_backend),
                     'preset': True,
                     'loaded': custom_model.id == fork_model,
                     'info': info,
@@ -290,11 +328,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
             model = {
                 'id': f'{custom_model.id}',
-                'name': custom_model.name,
+                'name': _catalog_display_name(custom_model, handshake, base_model),
                 'object': 'model',
                 'created': custom_model.created_at,
                 'owned_by': owned_by,
                 'connection_type': connection_type,
+                'urlIdx': _catalog_url_index(request, connection_type, base_model),
                 'preset': True,
                 **({'pipe': pipe} if pipe is not None else {}),
                 **({'provider': base_model.get('provider')} if base_model and base_model.get('provider') else {}),

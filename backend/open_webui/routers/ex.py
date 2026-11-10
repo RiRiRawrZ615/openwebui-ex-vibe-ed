@@ -22,7 +22,15 @@ from open_webui.utils.auth import get_current_user
 from open_webui.models.users import User, Users
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.ex_backend import BACKENDS, INSTALLABLE, auto_select, install_plan, path_allowed
-from open_webui.utils.ex_discover import DISCOVERABLE, manual_select, probe_all, probe_executable
+from open_webui.utils.ex_discover import (
+    DISCOVERABLE,
+    load_overrides,
+    manual_select,
+    overrides_file,
+    probe_all,
+    probe_executable,
+    save_override,
+)
 from open_webui.utils.ex_handshake import load_handshake, render_status
 from open_webui.utils.ex_import import db_path, import_tables
 from open_webui.utils.ex_journal import journal_index, journal_path
@@ -214,6 +222,28 @@ async def ex_install_plan(
     return install_plan(picked, dry_run=not settings.get("allowInstall", False))
 
 
+def _probe_context(with_backend: bool = False) -> dict:
+    """The inputs a probe needs to agree with the launcher.
+
+    Stored manual choices, the profiles directory, and the model the launcher started. Without the
+    last two the setup tab reports only what is on PATH plus its hardcoded build directories, so a
+    machine whose binary comes from a profile is reported as missing even though the right binary is
+    running. The launcher resolves the profiles directory from the runtime user's home; this uses the
+    same default so the two do not drift.
+    """
+    handshake = load_handshake(DATA_DIR) or {}
+    ctx = {
+        "overrides": load_overrides(DATA_DIR),
+        "profiles_dir": os.environ.get("OWV_PROFILES_DIR") or Path.home() / "Documents" / "llama_profiles",
+        "model_name": handshake.get("model") or "",
+    }
+    if with_backend:
+        # Only probe_all takes it. Passing it to probe_executable raised TypeError, which is what the
+        # single-component endpoint returned after this was added.
+        ctx["backend"] = handshake.get("backend") or ""
+    return ctx
+
+
 @router.get("/discover")
 async def ex_discover(
     components: str = Query(default=""),
@@ -229,7 +259,7 @@ async def ex_discover(
     unknown = [c for c in picked if c not in DISCOVERABLE]
     if unknown:
         raise HTTPException(status_code=400, detail=f"unknown component(s): {', '.join(unknown)}")
-    return probe_all(components=picked)
+    return probe_all(components=picked, **_probe_context(with_backend=True))
 
 
 @router.get("/discover/{component}")
@@ -240,7 +270,7 @@ async def ex_discover_one(
     """Probe one component. 404 rather than an empty report, so a typo is visible."""
     if component not in DISCOVERABLE:
         raise HTTPException(status_code=404, detail=f"unknown component: {component}")
-    return probe_executable(component)
+    return probe_executable(component, **_probe_context())
 
 
 @router.post("/discover/{component}/manual")
@@ -249,16 +279,26 @@ async def ex_discover_manual(
     path: str = Query(...),
     user=Depends(get_current_user),
 ):
-    """Validate a manually supplied binary path.
+    """Validate a manually supplied binary path and keep it.
 
-    Discovery cannot cover every layout, so a manual override is needed. This only checks
-    the path exists, is a file and is executable; it does not run it, and it refuses any
-    component that is not discoverable, so the field cannot point the setup at an
-    arbitrary binary.
+    Discovery cannot cover every layout, so a manual override is needed. This checks the path exists,
+    is a file and is executable, refuses any component that is not discoverable, and stores the choice
+    in the fork data dir, which is the file the launcher reads on the next start. Storing it is what
+    makes the field mean anything: validating and returning left the next probe re-running discovery,
+    so the tab still said not found and the engine kept using whatever it had picked itself.
     """
     if component not in DISCOVERABLE:
         raise HTTPException(status_code=404, detail=f"unknown component: {component}")
-    return manual_select(component, path)
+    report = manual_select(component, path)
+    if not report.get("accepted"):
+        return report
+    report.update(save_override(DATA_DIR, component, report["path"]))
+    # Report the same thing a probe would report now that the choice is stored, so the caller does not
+    # have to re-fetch to see what the tab shows.
+    # probe_executable does not take a backend; only probe_all does, since readiness is gated on it.
+    # Passing it here raised TypeError, which came back as a 500 even though the choice was stored.
+    report["probe"] = probe_executable(component, **_probe_context())
+    return report
 
 
 def _fork_db() -> Path:
