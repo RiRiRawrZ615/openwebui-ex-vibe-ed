@@ -63,7 +63,8 @@ opensearch-py==3.2.0
 transformers==5.5.4
 sentence-transformers==5.5.1
 accelerate==1.13.0
-pyarrow==20.0.0 # fix: pin pyarrow version to 20 for rpi compatibility #15897
+pyarrow==20.0.0; python_version < "3.14"  # fix: pin pyarrow version to 20 for rpi compatibility #15897
+pyarrow; python_version >= "3.14"  # no cp314 wheel for 20.0.0; source build needs Arrow SDK
 einops==0.8.2 
 
 ftfy==6.3.1
@@ -73,7 +74,8 @@ docx2txt==0.9
 python-docx==1.2.0
 python-pptx==1.0.2
 msoffcrypto-tool==6.0.0
-unstructured==0.22.31
+unstructured==0.22.31; python_version < "3.14"
+unstructured; python_version >= "3.14"  # 0.22.31 is capped below 3.12, so 3.14 must resolve freely
 preshed==3.0.13 # keep pinned: transitive via unstructured -> spaCy; 3.0.14 breaks HTML extraction (web loader)
 
 Markdown==3.10.2
@@ -127,7 +129,8 @@ elasticsearch==9.4.1
 pinecone==6.0.2
 oracledb==3.4.2
 
-av==14.0.1 # Caution: Set due to FATAL FIPS SELFTEST FAILURE, see discussion https://github.com/open-webui/open-webui/discussions/15720
+av==14.0.1; python_version < "3.14"  # FIPS selftest pin, see open-webui discussion 15720
+av; python_version >= "3.14"  # no cp314 wheel for 14.0.1; source build needs libavformat
 
 colbert-ai==0.2.22
 

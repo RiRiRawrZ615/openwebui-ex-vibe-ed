@@ -1,5 +1,5 @@
 Name:           openwebvibes
-Version:        1.1.6
+Version:        1.2.0
 Release:        1.rc1
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
@@ -51,6 +51,7 @@ install -m 755 packaging/launcher/owv-aliases.sh "%{buildroot}/usr/lib/openwebvi
 install -m 755 packaging/launcher/owv-status.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-status.sh"
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
 install -m 755 packaging/ensure-open-terminal.sh "%{buildroot}/usr/lib/openwebvibes/ensure-open-terminal.sh"
+install -m 755 packaging/ensure-venv.sh "%{buildroot}/usr/lib/openwebvibes/ensure-venv.sh"
 ln -s ../lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
 
 install -m 644 packaging/etc/openwebvibes/owv.conf "%{buildroot}/etc/openwebvibes/owv.conf"
@@ -71,6 +72,14 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 # offline install must not fail the whole package.
 /usr/lib/openwebvibes/ensure-open-terminal.sh > /var/lib/openwebvibes/open-terminal-report.json 2>/dev/null || true
 
+# Ship an environment, not just code. A noarch package never builds one, so a fresh machine got the
+# fork code with nothing to start: no venv, no importable module. Every fleet box happened to already
+# have a venv, so packaged installs looked healthy while a clean install could not run. Fill the venv
+# once at install time, bounded and non-fatal, so an offline install still completes.
+if [ "${OWV_RPM_BOOTSTRAP_VENV:-1}" = "1" ]; then
+    /usr/lib/openwebvibes/ensure-venv.sh > /var/lib/openwebvibes/venv-report.json 2>/dev/null || true
+fi
+
 %files
 /usr/lib/openwebvibes
 /usr/bin/owv
@@ -80,6 +89,16 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 /usr/lib/systemd/system/openwebvibes.service
 
 %changelog
+* Tue Nov 10 2026 Qwen 3.8 <qwen@localhost> - 1.2.0-1.rc1
+- Release marked as requiring rework. The context gate in this tree is retired in favor of an external
+  proxy in front of the engine; the visual layer lives on in openwebvibes-v2, which is a separate,
+  co-installable package. This package stays as the gate-era product and the reference for the visual work.
+- Added packaging/ensure-venv.sh: creates and fills the fork venv at install time when it is absent or
+  incomplete, so a machine that has never run this stack can actually run a packaged install. Detection
+  is an import against the interpreter the launcher will use, and the venv is filled at the package root
+  because that is what the packaged launcher resolves as FORK_DIR/.venv. Non-fatal and skippable with
+  OWV_RPM_BOOTSTRAP_VENV=0.
+
 * Mon Nov 09 2026 Qwen 3.8 <qwen@localhost> - 1.1.6-1.rc1
 - Scaled fit: the gate numbers are shares of the window the engine enforces, not constants written
   for a 256k model. send_limit is window minus answer room minus a 1000 token buffer that scales with
