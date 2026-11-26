@@ -7,7 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
-## [1.2.0-rc3] - 2026-11-26
+## [1.2.0-rc4] - 2026-11-26
+
+Three files the previous session left sitting in the tree, each one a defect with a symptom
+attached rather than a tidy-up. Everything under Verified was run on this box before the commit,
+not inferred from reading the code.
+
+### Fixed
+
+- **A clean clone of `ex-vibe-core` booted without its connection wiring, and `rpmbuild` from a
+  clean tree aborted in `%install`.** `packaging/launcher/owv-connections.sh` had never been
+  committed although committed code asked for it twice: `owv.sh:194` runs it backgrounded behind an
+  `[[ -x ]]` guard, which skips the whole step silently when the file is absent, and
+  `openwebvibes.spec:51` installs it by name. `%install` is not forgiving about that: a probe spec
+  on this box showed a failing install line ending the build with
+  `Bad exit status from ... (%install)` instead of reaching the rest of the section. The rc2 and rc3
+  RPMs carried the script anyway because `build-rpm.sh` tars the working tree instead of `HEAD`,
+  which is why the hole stayed invisible from this machine.
+- **A conf value written with a placeholder was exported as the placeholder.** The packaged conf
+  ships exactly that shape (`model_root=${HOME}/Documents/AI_Models`,
+  `runtime_dir=${XDG_CACHE_HOME:-${HOME}/.cache}/openwebvibes` in
+  `packaging/etc/openwebvibes/owv.conf:10`), and before this commit the parser exported values
+  untouched: the whole file had no expansion step and reached `export "$key=$val"` directly. A root
+  declared as `${HOME}/...` therefore arrived at `[[ -d "$MODEL_ROOT" ]]` as literal text and
+  failed, which is the "no model roots exist" death at `owv.sh:425`. `owv_expand_value()` now runs
+  on every accepted value. Measured against the shipped strings, `${HOME}/Documents/AI_Models`
+  resolves to `/home/amd/Documents/AI_Models` and the nested
+  `${XDG_CACHE_HOME:-${HOME}/.cache}/openwebvibes` resolves to `/home/amd/.cache/openwebvibes`. An
+  unrecognised name is left alone, `${FOO}/x` round-trips unchanged, and the conf is still read line
+  by line instead of being `eval`'d, so a settings file still cannot change how the launcher
+  resolves binaries.
+- **`pydub` could not be imported on the interpreter the venv gets built with.** `audioop` left the
+  stdlib in 3.13 and `pydub` imports it at module load. `pip` on this box is Python 3.14.7, and
+  `import audioop` raises `ModuleNotFoundError: No module named 'audioop'` here. `%post` runs
+  `ensure-venv.sh`, which creates `/usr/lib/openwebvibes/.venv` and installs
+  `/usr/lib/openwebvibes/backend/requirements.txt` into it, so the marker is resolved by that
+  venv's own interpreter on the target: 3.13 and newer pick up the backport, interpreters that still
+  ship `audioop` do not gain a redundant package.
+
+### Added
+
+- Nothing. Two launcher fixes, one pin, and the script that was already being called.
+
+### Verified
+
+- Payload check on the built `openwebvibes-1.2.0-4.noarch.rpm`: extracting it yields
+  `/usr/lib/openwebvibes/launcher/owv-connections.sh` (192 lines, mode 755), the shipped `owv.sh`
+  contains `owv_expand_value`, and the shipped `backend/requirements.txt` carries the pin at line
+  106. Before this commit the first two were true of the working tree and not of `HEAD`.
+- `pip download --no-deps audioop-lts` for this interpreter returns
+  `audioop_lts-0.2.2-cp313-abi3-manylinux1_x86_64...whl` (85 kB) from cache. It is an abi3 wheel, so
+  the venv fill gains a prebuilt binary and compiles nothing.
+- `bash -n` is clean on `owv.sh` and `owv-connections.sh`. The new script defaults to `show`: it
+  writes the database only when called with `apply`, so landing in the tree cannot change a running
+  instance by itself.
+- This box's own `~/.config/openwebvibes/owv.conf` declares `OWV_DATA_DIR`, `OWV_MODEL` and
+  `EX_MODEL_ROOTS` as literal absolute paths, so nothing changes for the running instance here; the
+  expansion matters for confs written in the placeholder form the package itself ships.
+
+## [1.2.0-rc3] - 2026-11-26## [1.2.0-rc3] - 2026-11-26
 
 Every item below came from a run, not from reading the code.
 
