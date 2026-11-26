@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 ROOT="$(dirname "$(readlink -f "$0")")"
 REPO="$(dirname "$ROOT")"
-VERSION="${OWV_RPM_VERSION:-1.0.0}"
+VERSION="${OWV_RPM_VERSION:-1.2.0}"
 RELEASE="${OWV_RPM_RELEASE:-1.rc1}"
 BUILDDIR="${OWV_RPM_BUILDDIR:-$ROOT/rpmbuild}"
 

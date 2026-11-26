@@ -1,6 +1,6 @@
 Name:           openwebvibes
-Version:        1.2.0
-Release:        1.rc1
+Version:        %{?_version}%{!?_version:1.2.0}
+Release:        %{?_release}%{!?_release:1.rc1}
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
 Source0:        openwebvibes.tar.gz
@@ -48,6 +48,7 @@ install -m 755 packaging/launcher/owv.sh "%{buildroot}/usr/lib/openwebvibes/laun
 install -m 755 packaging/launcher/owv-packaged.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-packaged.sh"
 install -m 755 packaging/launcher/owv-kill.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-kill.sh"
 install -m 755 packaging/launcher/owv-aliases.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-aliases.sh"
+install -m 755 packaging/launcher/owv-connections.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-connections.sh"
 install -m 755 packaging/launcher/owv-status.sh "%{buildroot}/usr/lib/openwebvibes/launcher/owv-status.sh"
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
 install -m 755 packaging/ensure-open-terminal.sh "%{buildroot}/usr/lib/openwebvibes/ensure-open-terminal.sh"
