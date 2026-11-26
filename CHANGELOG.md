@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.2.0-rc3] - 2026-11-26
+
+Every item below came from a run, not from reading the code.
+
+### Fixed
+
+- **The reconstruction handoff threw away most of what it existed to carry.** After eviction the
+  model is handed prior context, its last full reasoning loop, its last response and the last user
+  turn. Each of the four was cut to a fixed 1400 characters with no ellipsis and no setting. On this
+  machine, reading the two largest real reconstruction files in a live data dir (5386 and 5396
+  characters of last response), the old cap kept **1508 of 5494** and **1483 of 5479** characters:
+  around 73% of the last response was discarded every time. A reasoning loop measured separately at
+  7233 characters kept 19% of itself.
+
+  The four slices are now one shared budget (`_slices`): each field is guaranteed a floor and the
+  remainder is shared in proportion to what each one actually wants, so a long field gets the room it
+  needs and a short user turn is never starved by it while the block stays bounded. The same two
+  files now keep **5494** and **5479** characters, all of it. With a 500k-character reasoning loop the
+  user turn still survives intact and the block lands at 23999 of its 24000 cap.
+
+  Exposed as `reconstructMaxChars` (24000) and `reconstructMinChars` (600) in the ex settings, next to
+  the existing `readMaxChars` and `toolOutputWindowMaxChars`. `assemble()` threads them as keyword
+  arguments with the old behaviour as the default, so a caller that passes nothing is unaffected.
+
+### Added
+
+- **`backend/ex_reconstruct_selftest.py`.** It sits beside the package rather than inside
+  `open_webui/utils/` deliberately: a script in that directory puts it first on `sys.path`, and the
+  tree's own `calendar.py` then shadows the stdlib module, so the import dies before any check runs.
+  Covers the long field keeping its text, the budget ceiling, the no-starvation case, empty input, the
+  rendered markers, and that the old positional call still works.
+
+### Verified
+
+- Both selftests pass (`ex_reconstruct_selftest.py`, `ex_journal_selftest.py`).
+- Reloaded through `owv-restart-webui.sh`, which clones only the uvicorn process: Strata, the engine
+  and the terminal server kept their original PIDs (1222184 / 1222325 / 1225560) and the terminal
+  reported `/health` 200 throughout. The model stayed warm.
+- The running process serves the new module (`_slices` present, `DEFAULT_TOTAL_CAP` 24000).
+
 ## [1.2.0-rc2] - 2026-11-26
 
 Every item below came from a run, not from reading the code.
