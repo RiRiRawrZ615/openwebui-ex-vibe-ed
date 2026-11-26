@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.2.0-rc2] - 2026-11-26
+
+Every item below came from a run, not from reading the code.
+
+### Fixed
+
+- **The journal reader could not resolve its own chat, so it answered "no journal for this chat"
+  every time.** That is the one job the tool exists for: an agent whose context had been trimmed
+  had no way to recover its earlier reasoning or tool output, while the journals sat on disk. Three
+  independent defects produced the single message.
+  - `_resolve_chat` tried the tool argument and then `request.state.chat_id`. This build assigns
+    that attribute nowhere (the read exists, the write does not), so the branch was always `None`,
+    and the pointer text the model is shown does not carry an id either. The new
+    `_chat_id_from_request` also reads the parsed request body (`chat_id`, `id`,
+    `metadata.chat_id`), the query string and the `Referer` `/c/<id>`. Each source is filtered
+    through `is_saved_chat_id`, so temporary and channel chats stay refused, and each block is
+    guarded so a malformed request returns `""` instead of raising inside a tool call.
+  - `_newest_journal` searched `data_dir/"journal"` while `journal_path()` writes
+    `data_dir/"ex_journals"`, so the fallback walked an empty directory no matter how many journals
+    existed.
+  - That fallback returned `p.name`, suffix included, and `journal_path()` appends `.md` itself.
+    Even a found journal resolved to `<id>.md.md` and the read failed. It returns `p.stem` now.
+
+- **The version macros the build script passes had no effect.** `build-rpm.sh` has always passed
+  `--define _version` and `--define _release`, and the spec never read them: `Version` and
+  `Release` were literals. No release could be tagged without editing the spec by hand, and the
+  script defaulted to `1.0.0` while the spec said `1.2.0`, so a plain `./build-rpm.sh` produced a
+  package labelled three minors behind the tree it was cut from. Both fields read the macro with
+  the current value as the fallback, which keeps a bare `rpmbuild -bb openwebvibes.spec` working,
+  and the script default is raised to `1.2.0`.
+
+### Added
+
+- **`ex_journal_selftest.py`**, shipped in the package. No pytest and no network: it seeds its own
+  data dir and checks the newest-journal fallback, an explicit id, the query string, the `Referer`,
+  and that an unsaved id is still rejected. Against the previous revision it prints
+  `no journal for this chat`; against this build it prints `ok`, so it fails on the bug rather than
+  passing by construction.
+
+### Verified
+
+- Live, on the running instance, before packaging: explicit id, query string and `Referer` each
+  returned real entries (2439 chars), the fallback listed 25 entries, and `is_saved_chat_id` still
+  rejected `local:` ids.
+- The UI was restarted through `owv-restart-webui.sh`, which clones only the uvicorn process.
+  Strata, the engine and the terminal server kept their original PIDs and the terminal reported
+  `/health` 200 throughout, so a rollover fix did not require a model reload or disturb the
+  terminal.
+- Version macros checked with `rpm -q --specfile`: with the defines `1.2.0-1.rc1`, without them
+  `1.2.0-1.rc1`, and an override of `9.9.9` / `7.test` reports `9.9.9-7.test`.
+- Package contents diffed against `1.2.0-1.rc1`: identical file list plus the one new selftest,
+  nothing missing, same 247 MiB installed size.
+
+### Note
+
+`1.2.0-rc1` stays published and unchanged. It is marked rework-required in its release notes and
+describes gate/context work that is not in this branch.
+
 ## [1.1.6-rc1] - 2026-11-09
 
 Every item below came from a run, not from reading the code.
