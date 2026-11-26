@@ -103,6 +103,8 @@ black==26.5.1
 youtube-transcript-api==1.2.4
 
 pydub==0.25.1
+audioop-lts; python_version >= "3.13"  # audioop removed from stdlib in 3.13; pydub imports it at module load
+
 ddgs==9.14.4
 
 azure-ai-documentintelligence==1.0.2
