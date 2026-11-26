@@ -26,7 +26,12 @@ from typing import Any, Callable
 
 from open_webui.utils.ex_context_window import CHARS_PER_TOKEN
 from open_webui.utils.ex_journal import append_journal, journal_path
-from open_webui.utils.ex_reconstruct import reconstruct_block, write_reconstruct
+from open_webui.utils.ex_reconstruct import (
+    DEFAULT_MIN_PER_FIELD,
+    DEFAULT_TOTAL_CAP,
+    reconstruct_block,
+    write_reconstruct,
+)
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +84,8 @@ def assemble(
     entry_writer: ENTRY_WRITER | None = None,
     response_reserve: int = RESPONSE_RESERVE,
     fresh_turn: bool = False,
+    reconstruct_max_chars: int = DEFAULT_TOTAL_CAP,
+    reconstruct_min_chars: int = DEFAULT_MIN_PER_FIELD,
 ) -> tuple[list[dict], dict]:
     """Build one request from scratch, in block order. Returns the messages and the budget report.
 
@@ -196,7 +203,14 @@ def assemble(
         parts = report["reconstruct"]["parts"]
 
     if parts or report["journal_ids"]:
-        handoff = reconstruct_block(data_dir if data_dir is not None else "", chat_id, parts, report["journal_ids"])
+        handoff = reconstruct_block(
+            data_dir if data_dir is not None else "",
+            chat_id,
+            parts,
+            report["journal_ids"],
+            total_cap=reconstruct_max_chars,
+            min_per_field=reconstruct_min_chars,
+        )
         insert_at = 1 if out and out[0].get("block") == "main" else 0
         # System role, always. A handoff delivered as a user message reads as something the user
         # said, and the agent answers the handoff instead of the request. That is a smaller version of

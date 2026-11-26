@@ -32,7 +32,9 @@ PARTS = ("prior_context", "last_reasoning", "last_response", "last_user")
 
 # Inline block size cap. The file holds everything; the prompt carries a bounded copy so the
 # handoff itself cannot become the thing that overflows the window.
-INLINE_CAP = 1400
+INLINE_CAP = 1400            # legacy default, kept for callers that pass no budget
+DEFAULT_TOTAL_CAP = 24000    # matches ex_settings.reconstructMaxChars
+DEFAULT_MIN_PER_FIELD = 600  # matches ex_settings.reconstructMinChars
 
 
 def reconstruct_path(data_dir: Path | str, chat_id: str) -> Path:
@@ -101,7 +103,35 @@ def write_reconstruct(data_dir: Path | str, chat_id: str, messages: list[dict], 
     return {"path": str(path), "parts": parts, "written": True, "chars": int(path.stat().st_size)}
 
 
-def reconstruct_block(data_dir: Path | str, chat_id: str, parts: dict, journal_ids: list | None = None) -> str:
+def _slices(parts: dict, total_cap: int, min_per_field: int) -> dict:
+    """Cut the four parts to fit one shared budget instead of four separate ceilings.
+
+    A fixed per-field cap scales nothing: on a 262k window it truncates a 7k reasoning loop to
+    1400 characters while the other three fields waste their allowance. Splitting one budget
+    keeps the block bounded while giving the long field the room the short ones do not need.
+    Each field is guaranteed min_per_field first, then the remainder is shared in proportion to
+    what each one actually wants, so no field can starve another.
+    """
+    names = ("prior_context", "last_reasoning", "last_response", "last_user")
+    texts = {n: str(parts.get(n) or "") for n in names}
+    floors = {n: min(min_per_field, len(texts[n])) for n in names}
+    reserved = sum(floors.values())
+    spare = max(0, total_cap - reserved)
+    wants = {n: max(0, len(texts[n]) - floors[n]) for n in names}
+    want_total = sum(wants.values())
+    out = {}
+    for n in names:
+        if want_total <= 0:
+            out[n] = texts[n][: floors[n]]
+        else:
+            grant = floors[n] + (spare * wants[n] // want_total)
+            out[n] = texts[n][:grant]
+    return out
+
+
+def reconstruct_block(data_dir: Path | str, chat_id: str, parts: dict, journal_ids: list | None = None,
+                      total_cap: int = DEFAULT_TOTAL_CAP,
+                      min_per_field: int = DEFAULT_MIN_PER_FIELD) -> str:
     """The block put back in place of the evicted turns.
 
     Data only. The block is injected with role=system by inject_at_tail, so the role already states
@@ -110,20 +140,21 @@ def reconstruct_block(data_dir: Path | str, chat_id: str, parts: dict, journal_i
     The marker stays because a later pass finds the block by it and replaces it instead of stacking a
     second copy.
     """
+    cut = _slices(parts, total_cap, min_per_field)
     lines = [
         "[context slide]",
         "",
         "Prior context:",
-        (parts.get("prior_context") or "(none)")[:INLINE_CAP],
+        cut["prior_context"] or "(none)",
         "",
         "Your last full reasoning loop:",
-        (parts.get("last_reasoning") or "(none)")[:INLINE_CAP],
+        cut["last_reasoning"] or "(none)",
         "",
         "Your last response:",
-        (parts.get("last_response") or "(none)")[:INLINE_CAP],
+        cut["last_response"] or "(none)",
         "",
         "The last user message:",
-        (parts.get("last_user") or "(none)")[:INLINE_CAP],
+        cut["last_user"] or "(none)",
     ]
     ids = journal_ids or []
     if ids:

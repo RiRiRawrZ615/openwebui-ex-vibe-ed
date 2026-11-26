@@ -23,6 +23,14 @@ DEFAULTS = {
     # tool window may hold. Both are reported when reached instead of applied silently.
     "readMaxChars": 8000,
     "toolOutputWindowMaxChars": 12000,
+    # The reconstruction handoff (prior context, last reasoning, last response, last user turn).
+    # These were four hardcoded 1400-char slices, which on a 262k window threw away the very
+    # thing the handoff exists to carry: a real reasoning loop measured 7.2k chars on this
+    # machine and was cut to a fifth of that, silently, with no ellipsis. Budgeted rather than
+    # per-field so a long reasoning loop cannot starve the user turn of the room it needs.
+    "reconstructMaxChars": 24000,   # total characters the whole handoff block may use
+    "reconstructMinChars": 600,     # floor per field, so a shared budget always leaves each
+                                    # one something rather than letting the first eat it all
     "loopGuard": True,           # detection + steering note at iteration boundary
     "loopThreshold": 3,
     "liveStats": True,           # tok/s during generation
