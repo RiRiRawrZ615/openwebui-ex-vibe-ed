@@ -156,20 +156,43 @@ def fit_request(
         report["order"].append("tool_turns")
 
     # 3. History, through the journal. The copy on disk must exist before anything leaves the prompt.
-    if settings.get("rollover") and settings.get("rolloverShed") and measure(messages, tool_block) > limits["send_limit"]:
+    #
+    # It used to anchor on the FIRST user message and drop only what sat in front of it. In a
+    # real chat the system prompt is first, so that slice held nothing but the system message and
+    # the step could never fire: a 45k-token list stayed 45k tokens over a 25k limit with every
+    # default on. It now evicts the OLDEST turns behind a trailing window, keeps the system and
+    # developer messages and the live turn, and repeats while the list is still over the limit,
+    # because one pass could not always free enough.
+    if settings.get("rollover") and settings.get("rolloverShed"):
         # Without the rollover flags there is no journal entry for the removed text. Dropping a span
         # with no copy is data loss, not eviction, so this step is gated the same way the shed is.
-        history = [m for m in messages if m.get("role") not in ("system", "developer", "user", "tool")]
-        if history:
-            keep_from = next(
-                (i for i, m in enumerate(messages) if m.get("role") == "user"),
-                0,
-            )
-            dropped = [m for m in messages[:keep_from] if m.get("role") != "system"]
-            if dropped:
-                messages = [m for m in messages if m not in dropped]
-                report["history_dropped"] = len(dropped)
+        keep_turns = int(settings.get("rolloverKeepTurns") or 6)
+        systemish = ("system", "developer")
+        while measure(messages, tool_block) > limits["send_limit"]:
+            # index of the oldest turn that may go: the (keep_turns+1)th user-or-assistant group
+            # from the end, counting user messages as turn starts.
+            starts = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+            if len(starts) <= keep_turns:
+                break                     # nothing left to shed without eating the live turns
+            # Shed ONE turn per pass, not the whole span in front of the window. Dropping
+            # everything at once overshot badly: 260 tokens over the limit cost 328 messages.
+            # Removing the oldest turn at a time makes the loop stop as soon as it fits, so a
+            # small overshoot costs a small eviction.
+            cut_to = starts[1] if len(starts) > 1 else starts[0]
+            droppable = [
+                i for i in range(cut_to)
+                if i < len(messages) and messages[i].get("role") not in systemish
+            ]
+            if not droppable:
+                break                     # only system text in front of the window
+            removed = [messages[i] for i in droppable]
+            drop_set = set(id(m) for m in removed)
+            messages = [m for m in messages if id(m) not in drop_set]
+            report["history_dropped"] = report.get("history_dropped", 0) + len(removed)
+            if "history" not in report["order"]:
                 report["order"].append("history")
+
+
 
     # 4. The tool definitions. The engine counts them, so on a small window dropping them is
     #    often the only way to make room for the content that actually matters.
