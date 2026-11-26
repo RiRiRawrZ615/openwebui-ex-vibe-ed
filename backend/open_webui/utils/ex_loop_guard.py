@@ -55,6 +55,32 @@ MIN_CONTENT_WORDS = 6
 # the third attempt never runs. That matches what RiRi asked for and what the note says.
 REFUSE_ON_OCCURRENCE = 3
 
+# Reads are idempotent and are legitimately repeated: a model re-reads the same page after a
+# trimmed answer, or asks the journal again for the entry it now knows the id of. Refusing the
+# third identical read blocks real work rather than a loop, so reads get a higher bar while
+# writes and shell calls keep the strict one.
+READ_ONLY_TOOLS = frozenset({
+    'read_cache', 'grep_cache', 'cache_index', 'read_file', 'list_files', 'view_file', 'view_knowledge_file', 'query_knowledge_files',
+    'ex_journal', 'recall', 'search_memories', 'list_memory_paths', 'read_memory_path', 'list_paths', 'ex_search', 'ex_get', 'ex_status',
+})
+READ_ONLY_REFUSE_ON_OCCURRENCE = 6
+
+'''Never refuse these at all.
+
+The journal is the recovery path: when context has been trimmed the journal is how the model
+gets its own earlier reasoning back. Refusing it, at any count, removes the only way out and is
+strictly worse than letting it re-read the same entry. Memory recall is the same shape.
+'''
+NEVER_REFUSE_TOOLS = frozenset({
+    'ex_journal', 'recall', 'search_memories', 'list_paths',
+})
+
+# A prior call that returned empty or an error is not evidence of a loop. It is a failed read,
+# and retrying it is the only way forward, so those attempts are not counted.
+EMPTY_RESULT_MARKERS = (
+    'nothing cached', 'unable to fetch', 'no journal', 'journal not created', '[memory error]', 'ref is empty', 'cannot read', 'not found', 'is empty',
+)
+
 # How many consecutive identical errors, arriving faster than the backoff window, mean the
 # turn is not going to recover. Three instant failures is a broken request, not a slow one.
 MAX_INSTANT_ERRORS = 3
@@ -139,6 +165,31 @@ def repeat_index(output_items: list[dict]) -> dict:
     return counts
 
 
+def _fruitful_count(output_items, sig):
+    """Prior identical calls that returned content, not an empty result or an error.
+
+    The guard stops a model spinning on a call that keeps returning the same thing. A call
+    that returned nothing did not return the same thing, it failed, and refusing the retry
+    removes the only action that could recover. Counting only attempts that came back with
+    content keeps a dead source retryable while a live one still cannot be looped.
+    """
+    count = 0
+    pending = None
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "function_call":
+            pending = call_signature(item.get("name", ""), item.get("arguments", ""))
+        elif item.get("type") == "function_call_output" and pending == sig:
+            text = item.get("output")
+            if isinstance(text, list):
+                text = chr(32).join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in text)
+            low = str(text or "").lower()
+            if low.strip() and not any(m in low for m in EMPTY_RESULT_MARKERS):
+                count += 1
+            pending = None
+    return count
+
 def would_repeat(output_items: list[dict], name: str, arguments: Any,
                  threshold: int = REFUSE_ON_OCCURRENCE) -> bool:
     """True when running this call would be the `threshold`-th identical attempt.
@@ -149,8 +200,11 @@ def would_repeat(output_items: list[dict], name: str, arguments: Any,
     """
     if not str(arguments or "").strip() or str(arguments).strip() in ("{}", "null", "None"):
         return False
+    if name in NEVER_REFUSE_TOOLS:
+        return False
     sig = call_signature(name, arguments)
-    return repeat_index(output_items).get(sig, 0) + 1 >= threshold
+    limit = READ_ONLY_REFUSE_ON_OCCURRENCE if name in READ_ONLY_TOOLS else threshold
+    return _fruitful_count(output_items, sig) + 1 >= limit
 
 
 def refused_call_note(name: str) -> str:
