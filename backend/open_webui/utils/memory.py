@@ -82,11 +82,40 @@ def _path_rank(memory_path: str | None, lookup_path: str | None) -> tuple | None
     return None
 
 
-def _memory_matches_query(memory, query: str) -> bool:
-    value = query.strip().lower()
-    if not value:
+STOPWORDS = frozenset("a an and are as at be but by for from has have how i in is it its of on or that the their them then there these they this to was were what when where which who why will with you your".split())
+
+
+def _memory_terms(text):
+    """Content words of a query, lowercased, deduplicated, order preserved."""
+    seen = []
+    for raw in (text or "").lower().split():
+        word = "".join(c for c in raw if c.isalnum() or c in "-_.")
+        if len(word) >= 3 and word not in STOPWORDS and word not in seen:
+            seen.append(word)
+    return seen
+
+
+def _memory_score(memory, terms):
+    """Relevance of one memory to the query terms."""
+    if not terms:
+        return 0.0
+    content = (memory.content or "").lower()
+    path = (memory.path or "").lower()
+    score = 0.0
+    for term in terms:
+        hits = content.count(term)
+        if hits:
+            score += 1.0 + min(hits - 1, 3) * 0.25
+        if term in path:
+            score += 0.75
+    return score
+
+
+def _memory_matches_query(memory, query):
+    terms = _memory_terms(query)
+    if not terms:
         return True
-    return value in (memory.content or '').lower() or value in (memory.path or '').lower()
+    return _memory_score(memory, terms) > 0
 
 
 def search_memory_rows(
@@ -121,9 +150,12 @@ def search_memory_rows(
     if query:
         rows = [memory for memory in rows if _memory_matches_query(memory, query)]
 
+    _qterms = _memory_terms(query)
     def sort_key(memory):
         rank = _path_rank(memory.path, lookup_path) if lookup_path else None
-        return rank if rank is not None else (9, 0), -(memory.updated_at or 0), memory.id or ''
+        tier = rank if rank is not None else (9, 0)
+        score = _memory_score(memory, _qterms)
+        return tier, -score, -(memory.updated_at or 0), memory.id or ''
 
     return sorted(rows, key=sort_key)[: max(1, min(limit or 20, 100))]
 
