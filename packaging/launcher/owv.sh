@@ -61,6 +61,33 @@ fi
 # Parsed line by line, never eval'd. Only OWV_ names plus EX_MODEL_ROOTS are accepted so a
 # settings file cannot change how the shell resolves binaries. An env var already set in the
 # calling shell wins over the file.
+# The packaged conf writes values in placeholder form (${HOME}/Documents/AI_Models). Exporting that
+# text literally means [[ -d "$MODEL_ROOT" ]] tests the string "${HOME}/..." and fails on a machine
+# with a perfectly good model tree, which is the "no model roots exist" error on lp10. Only the
+# documented placeholders expand; the config is still read as data and never eval'd, so a settings
+# file cannot change how the shell resolves binaries.
+owv_expand_value() {
+    local v="$1" name key fb
+    while [[ "$v" =~ \$\{([^{}]*)\} ]]; do
+        name="${BASH_REMATCH[1]}"
+        case "$name" in
+            HOME) v="${v//\$\{HOME\}/$HOME}" ;;
+            XDG_*)
+                if [[ "$name" == *':-'* ]]; then
+                    key="${name%%:-*}"
+                    fb="${name#*:-}"
+                    fb="${fb//\$\{HOME\}/$HOME}"
+                    v="${v//\$\{$name\}/${!key:-$fb}}"
+                else
+                    v="${v//\$\{$name\}/${!name:-}}"
+                fi
+                ;;
+            *) break ;;
+        esac
+    done
+    printf '%s' "$v"
+}
+
 OWV_CONFIG_FILE="${OWV_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/openwebvibes/owv.conf}"
 if [[ -f "$OWV_CONFIG_FILE" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -69,6 +96,17 @@ if [[ -f "$OWV_CONFIG_FILE" ]]; then
         key="${line%%=*}"
         val="${line#*=}"
         [[ "$key" == "$line" ]] && continue
+        # Bare keys (port=, model_port=) were skipped by this parser, so a settings file that
+        # looked correct did nothing and the launcher fell back to hardcoded defaults. The engine
+        # then came up on one port while the stored connection row pointed at another, and every
+        # chat failed with Model '' was not found.
+        case "$key" in
+            port) key=OWV_WEBUI_PORT ;;
+            model_port|api_port|llama_port) key=OWV_API_PORT ;;
+            vision_port) key=OWV_VISION_PORT ;;
+            terminal_port) key=OWV_TERMINAL_PORT ;;
+        esac
+        val="$(owv_expand_value "$val")"
         [[ "${key:0:4}" != "OWV_" && "$key" != "EX_MODEL_ROOTS" ]] && continue
         if [[ -z "${!key:-}" ]]; then
             export "$key=$val"
