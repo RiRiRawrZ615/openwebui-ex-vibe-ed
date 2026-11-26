@@ -28,8 +28,26 @@ class Tools:
 
     @staticmethod
     def _memory_tools():
-        from open_webui.tools.builtin import add_memory, list_memory_paths, read_memory_path, search_memories, update_memory
-        return (add_memory, search_memories, list_memory_paths, read_memory_path, update_memory)
+        from open_webui.tools.builtin import (
+            add_memory,
+            delete_memory,
+            list_memory_paths,
+            read_memory_path,
+            replace_memory_content,
+            search_memories,
+            update_memory,
+            update_memory_by_id,
+        )
+        return (
+            add_memory,
+            search_memories,
+            list_memory_paths,
+            read_memory_path,
+            update_memory,
+            delete_memory,
+            replace_memory_content,
+            update_memory_by_id,
+        )
 
     async def remember(self, content: str, type: str='user', path: str='', __request__: Any=None, __user__: dict=None, __event_emitter__: Optional[Callable[[dict[str, Any]], Awaitable[None]]]=None) -> str:
         """
@@ -102,6 +120,73 @@ class Tools:
         except Exception as exc:
             return f'[MEMORY ERROR] {exc}'
 
+    async def forget(self, memory_id: str, __request__: Any=None, __user__: dict=None) -> str:
+        """Delete one stored memory by id.
+
+        The vault could add, list, read and bulk-update, but never remove a single entry,
+        so a wrong or outdated fact could only be corrected by rewriting every operation
+        in the path. The id comes from recall() or read_path(), which both report it.
+        """
+        if __request__ is None:
+            return '[MEMORY ERROR] Open WebUI request context is unavailable.'
+        memory_id = (memory_id or '').strip()
+        if not memory_id:
+            return '[MEMORY ERROR] A memory_id is required. Get one from recall() or read_path().'
+        try:
+            tools = self._memory_tools()
+            delete_memory = tools[5]
+            return await delete_memory(memory_id=memory_id, __request__=__request__, __user__=__user__ or {})
+        except Exception as exc:
+            return f'[MEMORY ERROR] {exc}'
+
+    async def replace(self, memory_id: str, content: str, __request__: Any=None, __user__: dict=None) -> str:
+        """Replace one memory's content in place, keeping its id.
+
+        update_memories() takes an operations array, which is the wrong shape for a
+        single correction: a model fixing one stale sentence had to reconstruct the whole
+        call. This is the single-entry form, and the id is preserved.
+        """
+        if __request__ is None:
+            return '[MEMORY ERROR] Open WebUI request context is unavailable.'
+        memory_id = (memory_id or '').strip()
+        if not memory_id:
+            return '[MEMORY ERROR] A memory_id required.'
+        if not (content or '').strip():
+            return '[MEMORY ERROR] Content is empty. Use forget() to remove a memory instead.'
+        try:
+            tools = self._memory_tools()
+            replace_memory_content = tools[6]
+            return await replace_memory_content(memory_id=memory_id, content=content, __request__=__request__, __user__=__user__ or {})
+        except Exception as exc:
+            return f'[MEMORY ERROR] {exc}'
+
+    async def revise(self, memory_id: str, content: str='', type: str='', path: str='', __request__: Any=None, __user__: dict=None) -> str:
+        """Change a memory's content, type or path by id, leaving anything omitted alone.
+
+        replace() rewrites content only. This is the partial form: moving a memory to
+        another path or retyping it does not require restating its text.
+        """
+        if __request__ is None:
+            return '[MEMORY ERROR] Open WebUI request context is unavailable.'
+        memory_id = (memory_id or '').strip()
+        if not memory_id:
+            return '[MEMORY ERROR] A memory_id required.'
+        if not (content or '').strip() and not (type or '').strip() and not (path or '').strip():
+            return '[MEMORY ERROR] Nothing to change: give content, type or path.'
+        try:
+            tools = self._memory_tools()
+            update_memory_by_id = tools[7]
+            return await update_memory_by_id(
+                memory_id=memory_id,
+                content=(content or None),
+                type=(type or None),
+                path=(path or None),
+                __request__=__request__,
+                __user__=__user__ or {},
+            )
+        except Exception as exc:
+            return f'[MEMORY ERROR] {exc}'
+
     async def knowledge_guidance(self) -> str:
         """
         Explain the intended division of labor with native Knowledge Bases.
@@ -145,3 +230,21 @@ async def knowledge_guidance(self) -> str:
         This function does not duplicate kb_exec; Open WebUI injects kb_exec natively when enabled.
         """
     return await _builtin_tools.knowledge_guidance()
+
+async def forget(memory_id: str, __request__: Any=None, __user__: dict=None) -> str:
+    """
+    Delete one stored memory by id. Get the id from recall() or read_path().
+    """
+    return await _builtin_tools.forget(memory_id=memory_id, __request__=__request__, __user__=__user__)
+
+async def replace(memory_id: str, content: str, __request__: Any=None, __user__: dict=None) -> str:
+    """
+    Replace one memory's content in place by id, keeping the id.
+    """
+    return await _builtin_tools.replace(memory_id=memory_id, content=content, __request__=__request__, __user__=__user__)
+
+async def revise(memory_id: str, content: str='', type: str='', path: str='', __request__: Any=None, __user__: dict=None) -> str:
+    """
+    Change a memory's content, type or path by id, leaving anything omitted alone.
+    """
+    return await _builtin_tools.revise(memory_id=memory_id, content=content, type=type, path=path, __request__=__request__, __user__=__user__)
