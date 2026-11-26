@@ -803,12 +803,26 @@ class Tools:
                             f.write(html)
                     except Exception:
                         pass
-                self._record(key, canonical, title, blocks, False)
+                # An empty parse is a failure, not a page. Recording it poisoned the cache: every later
+                # read_cache on this url saw a valid entry with zero blocks and reported the page as
+                # present but unreadable, which is what sent a model into a retry loop. Only record when
+                # there is something to record.
+                if blocks:
+                    self._record(key, canonical, title, blocks, False)
             else:
                 blocks = self._blocks(key)
                 if not blocks:
                     return f"Unable to fetch {canonical} (no cached copy on disk)."
                 used_cache = True
+
+        # A fetch that parsed to nothing must say so. Falling through built a header claiming
+        # FETCHED with 0 lines, which reads like success and invites the model to read_cache it.
+
+        if not blocks:
+            return (
+                f"Unable to fetch {canonical} (the page returned no readable text; it may need"
+                "javascript, a login, or it may be blocked. Try a different source."
+            )
 
         budget = min(int(max_chars or self.valves.OUTPUT_CHARS), self.valves.OUTPUT_CHARS)
         wins = self._windows(blocks, query, budget, self.valves.FOCUS_MAX_WINDOWS)
