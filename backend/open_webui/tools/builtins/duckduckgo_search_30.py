@@ -269,6 +269,16 @@ def _b64url(href: str) -> str:
         return ""
 
 
+ENGINE_URLS = {
+    'bing': 'https://www.bing.com/search?q=',
+    'bingrss': 'https://www.bing.com/search?format=rss&q=',
+    'ddg': 'https://html.duckduckgo.com/html/?q=',
+    'searx': 'https://searx.be/search?q=',
+    'marginalia': 'https://search.marginalia.nu/search?query=',
+    'lite': 'https://lite.duckduckgo.com/lite/',
+}
+
+
 class Tools:
     class Valves:
         CACHE_DIR = "/home/amd/Documents/AI_Output/cache/web_search"
@@ -620,17 +630,13 @@ class Tools:
             if engine == "bing":
                 extra = "&qft=+filterui:age-lt" + str(days * 1440)
 
-        urls = {
-            "bing": "https://www.bing.com/search?q=" + q + extra,
-            "bingrss": "https://www.bing.com/search?format=rss&q=" + q + extra,
-            "ddg": "https://html.duckduckgo.com/html/?q=" + q,
-            "searx": "https://searx.be/search?q=" + q + "&format=json",
-            "marginalia": "https://search.marginalia.nu/search?query=" + q,
-            "lite": "https://lite.duckduckgo.com/lite/",
-        }
+        urls = ENGINE_URLS
         # lite only answers as a POST. GET returns a 202 block page.
         post = ("q=" + q).encode() if engine == "lite" else None
 
+        if engine not in urls:
+            logger.warning("search: %s has no dispatch, skipping", engine)
+            return []
         for attempt in range(2):
             html = await self._aget(urls[engine], post=post)
             if not html:
@@ -727,7 +733,8 @@ class Tools:
         engines = [e.strip() for e in (self.valves.SEARCH_ENGINES or "").split(",") if e.strip()]
         hits = 0
         kq = _keyword_query(query)
-        for engine in engines[:self.valves.POOL_ENGINES]:
+        live = [e for e in engines if e in ENGINE_URLS]
+        for engine in live[:self.valves.POOL_ENGINES]:
             got = await self._search_engine(engine, kq, count, timelimit)
             if got:
                 hits += 1
