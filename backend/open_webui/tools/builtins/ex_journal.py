@@ -14,6 +14,7 @@ already forbid.
 Exported functions: index, read
 """
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -42,9 +43,58 @@ def _resolve_data_dir(request: Request) -> Path:
     return Path(DATA_DIR)
 
 
+def _chat_id_from_request(request) -> str:
+    """Best-effort chat id for this call, from where Open WebUI actually carries it.
+
+    state.chat_id is never assigned in this build, so besides an explicit argument look at
+    the parsed request body (chat_id / id / metadata.chat_id), the query string, then the
+    Referer (/c/<id>). Returns "" when nothing is found. Never raises.
+    """
+    try:
+        query = getattr(request, "query_params", None)
+        if query:
+            for key in ("chat_id", "id"):
+                value = query.get(key)
+                if value and is_saved_chat_id(str(value)):
+                    return str(value)
+    except Exception:
+        pass
+    try:
+        body = getattr(request, "_json", None)
+        if isinstance(body, dict):
+            meta = body.get("metadata")
+            candidates = [
+                body.get("chat_id"),
+                body.get("id"),
+                (meta or {}).get("chat_id") if isinstance(meta, dict) else None,
+            ]
+            for value in candidates:
+                if value and is_saved_chat_id(str(value)):
+                    return str(value)
+    except Exception:
+        pass
+    try:
+        referer = ""
+        headers = getattr(request, "headers", None)
+        if headers:
+            referer = headers.get("referer") or headers.get("Referer") or ""
+        if referer:
+            match = re.search(r"/c/([0-9a-fA-F-]{8,})", referer)
+            if match and is_saved_chat_id(match.group(1)):
+                return match.group(1)
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_chat(request: Request, chat_id: str) -> str:
     state = getattr(request, "state", None)
-    for source in (chat_id, getattr(state, "chat_id", None)):
+    # state.chat_id is never assigned by this build, so it is only one of several sources.
+    for source in (
+        chat_id,
+        getattr(state, "chat_id", None),
+        _chat_id_from_request(request),
+    ):
         if source and is_saved_chat_id(str(source)):
             return str(source)
     return ""
@@ -52,7 +102,7 @@ def _resolve_chat(request: Request, chat_id: str) -> str:
 
 def _newest_journal(data_dir: Path) -> str:
     """Fallback when no chat can be resolved: the most recently written journal."""
-    root = data_dir / "journal"
+    root = data_dir / "ex_journals"
     if not root.exists():
         return ""
     candidates = sorted(
@@ -60,7 +110,8 @@ def _newest_journal(data_dir: Path) -> str:
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    return candidates[0].name if candidates else ""
+    # journal_path() appends .md itself, so hand back the stem or the name is doubled.
+    return candidates[0].stem if candidates else ""
 
 
 class Tools:
