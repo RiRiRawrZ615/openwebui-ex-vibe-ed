@@ -136,6 +136,19 @@ DEFAULTS = {
     # Rolling context. The writer keeps a verbatim copy of the chat on disk in the export shape and
     # the reader hands it to the next chat, so a chat can be continued without anything being
     # paraphrased on the way in. The engine is not asked to be clever about this; the app owns it.
+    # --- per-turn eviction (RiRi's design) -------------------------------------------------
+    # The chat transcript leaves the prompt EVERY turn, not when a threshold is crossed, and is
+    # pasted back as a flat text export plus the last reasoning turn. A threshold policy keeps the
+    # whole transcript in the prompt until it is nearly the size of the window, so the prompt always
+    # converges on the window and the window is what ends the chat. Evicting every turn keeps the
+    # prompt at roughly the export size plus the live turn, so the real window is only a safety net.
+    #
+    # This is the fix for the failure mode that killed chats on both machines: a 157034 token
+    # prompt against a 131072 window, refused mid-turn with no recovery.
+    "evictEveryTurn": True,
+    "evictExportChars": 20000,     # cap on the transcript block pasted back in
+    "evictMessageChars": 2000,     # per message cap inside the transcript block
+    "keepLiveTurns": 0,            # live messages kept verbatim in front of the current turn
     "rollover": True,
     "rolloverThreshold": 0.7,      # fraction of the window that fires the rollover
     "rolloverMaxChars": 60000,     # size of the block fed back; the file on disk keeps everything

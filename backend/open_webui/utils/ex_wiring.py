@@ -41,6 +41,7 @@ from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils.ex_stats import estimate_tokens, format_stats_line, generation_stats, window_fill
 from open_webui.utils.ex_rag import ChatMemory, should_retrieve
 from open_webui.utils.ex_fit import fit_request, scaled_limits
+from open_webui.utils.ex_perturn import per_turn_evict
 from open_webui.utils.ex_engine_log import (
     eta as engine_eta,
     parse_line as engine_parse_line,
@@ -570,6 +571,29 @@ def prompt_gate(
     messages = list(messages or [])
     settings = settings or {}
 
+    # Per-turn eviction, before anything is measured. This is the policy that keeps the prompt
+    # small instead of letting it grow to the window: the transcript leaves, the export goes back
+    # in, and everything below is then measured on a prompt that is already bounded. It runs first
+    # because measuring before it would size the request against content that is about to go.
+    per_turn_report: dict = {}
+    # A stateless call has no chat id, because the client resends the whole history itself. It still
+    # grows without bound and still hits the window, so it is evicted too, rendered from the removed
+    # messages rather than from a transcript file.
+    if settings.get("evictEveryTurn") and (chat_id or settings.get("evictStateless", True)):
+        try:
+            messages, per_turn_report = per_turn_evict(
+                messages,
+                settings,
+                data_dir,
+                chat_id,
+                keep_live=int(settings.get("keepLiveTurns") or 0),
+            )
+        except Exception as exc:
+            # An eviction that fails must not take the turn down. The prompt is unchanged, and the
+            # gate below still runs on the full list, which is the pre-existing behaviour.
+            log.warning("EX per-turn eviction failed, keeping the full prompt: %s", exc)
+            per_turn_report = {"error": str(exc), "evicted": 0}
+
     # Never plan for more room than the engine has. A configured window larger than the handshake
     # turns a request that should have been shed into a request the engine refuses, which is how a
     # 128k machine gets context death while the settings say 262144. The handshake is the smaller of
@@ -626,6 +650,8 @@ def prompt_gate(
     report["shed"] = False
     report["max_tokens_fit"] = 0
     report["refused"] = False
+    if per_turn_report:
+        report["per_turn"] = per_turn_report
 
     if not settings.get("enabled"):
         return messages, report
@@ -676,7 +702,11 @@ def prompt_gate(
     # to pick the conversation back up in a fresh window: prior context, the last full reasoning loop,
     # the last response, the last user message, and the path of the text file holding all four. System
     # role, and the block says plainly that it is not something the user said.
-    if settings.get("reconstructBlock", True) and chat_id:
+    # When per-turn eviction already ran, the handoff block it injected IS the reconstruction: it
+    # carries the transcript, the last reasoning, and the file path. Adding the separate reconstruct
+    # block on top would carry the same four parts a second time, every turn, which is up to
+    # reconstructMaxChars (24000 chars, roughly 7000 tokens) of pure duplication.
+    if settings.get("reconstructBlock", True) and chat_id and not per_turn_report.get("evicted"):
         from open_webui.utils.ex_reconstruct import reconstruct_block, write_reconstruct
 
         parts = write_reconstruct(data_dir, chat_id, shaped)["parts"]

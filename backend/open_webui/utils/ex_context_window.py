@@ -25,6 +25,8 @@ shapes what goes into one request.
 """
 from __future__ import annotations
 
+import os
+
 import json
 import logging
 import re
@@ -40,6 +42,16 @@ log = logging.getLogger(__name__)
 # rather than aspirational. Kept as a constant because a wrong ceiling here means either a
 # wasted window or a hard API error mid generation.
 DEFAULT_CONTEXT_WINDOW = 262144
+
+# What to assume when the launcher has not recorded a window. This used to be
+# DEFAULT_CONTEXT_WINDOW, which is the 256k amd box: on the 128k nvidia box a missing or stale
+# handshake then meant the gate believed it had twice the window it had, measured 103372 tokens as
+# fitting, and sent 157034. The engine refused mid-turn and the chat was dead.
+#
+# A missing handshake is unknown, not large, so the fallback is deliberately small. A chat whose
+# prompt is a few thousand tokens is not slowed by a small assumed window, because per-turn
+# eviction already keeps it there; a chat that assumes a window it does not have is dead.
+NO_HANDSHAKE_WINDOW = int(os.environ.get("EX_NO_HANDSHAKE_WINDOW", "32768"))
 
 # Room for the reply. A request that fills the window leaves the sampler nowhere to write, so
 # the budget is always ceiling minus this.
@@ -86,6 +98,48 @@ DEFAULT_TOOL_SCHEMA_TOKENS = 4096
 ANSWER_ROOM_MIN = 512
 
 
+
+# --------------------------------------------------------------------------------------
+# exact counting
+# --------------------------------------------------------------------------------------
+# The character ratio is not a tokenizer. Measured against the live engine on 2026-11-27, chars/3.4
+# over-counted prose by 1.49x and UNDER-counted tool JSON by 1.26x. Agentic work is mostly tool
+# JSON, so the gate reported requests that fit and the engine refused them: one request measured
+# 103372 here and reached the engine as 157034. That is the whole of context death.
+#
+# When the model's own vocabulary is reachable, count with it. It measured 0.878-1.000 against the
+# engine, always on the safe side. When it is not reachable, fall back to the ratio below and keep
+# working; this must never raise into a request.
+EXACT_TOKENS = os.environ.get("EX_EXACT_TOKENS", "1") != "0"
+_EXACT_CACHE: dict = {}
+_EXACT_CACHE_MAX = 200000
+
+
+def exact_tokens(text: Any):
+    """Exact tokens for this string, or None when no vocabulary is loaded."""
+    if not EXACT_TOKENS:
+        return None
+    if not isinstance(text, str):
+        text = str(text or "")
+    if not text:
+        return 0
+    key = (len(text), hash(text))
+    hit = _EXACT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from open_webui.utils import ex_tokenizer
+        value = ex_tokenizer.count(text)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    if len(_EXACT_CACHE) > _EXACT_CACHE_MAX:
+        _EXACT_CACHE.clear()
+    _EXACT_CACHE[key] = value
+    return value
+
+
 def estimate_tokens(text: Any, chars_per_token: float = CHARS_PER_TOKEN) -> int:
     """Rough token count.
 
@@ -97,6 +151,11 @@ def estimate_tokens(text: Any, chars_per_token: float = CHARS_PER_TOKEN) -> int:
         return 0
     if not isinstance(text, str):
         text = str(text)
+    # Exact first, and only when the caller did not ask for a specific ratio.
+    if chars_per_token == CHARS_PER_TOKEN:
+        exact = exact_tokens(text)
+        if exact is not None:
+            return max(1, exact)
     ratio = max(1.0, float(chars_per_token or CHARS_PER_TOKEN))
     return max(1, int(len(text) / ratio) + 1)
 
@@ -394,7 +453,7 @@ def detect_ceiling(data_dir: Path | str | None = None) -> tuple[int, str]:
         if stamp == hit[2]:
             return hit[0], hit[1]
 
-    value, source = DEFAULT_CONTEXT_WINDOW, "default"
+    value, source = NO_HANDSHAKE_WINDOW, "no-handshake"
     stamp = None
     if data_dir:
         try:
