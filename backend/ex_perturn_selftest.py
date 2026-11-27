@@ -2,7 +2,7 @@
 import os, sys, tempfile, shutil
 import os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import ex_perturn as P
+from open_webui.utils import ex_perturn as P
 from open_webui.utils.ex_context_window import message_tokens
 
 def msgs_fixture(turns=12, tool_body=900):
