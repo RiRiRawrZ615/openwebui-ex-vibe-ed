@@ -101,6 +101,7 @@ from open_webui.utils.ex_context_window import (
 )
 from open_webui.utils.ex_export import verbatim_digest
 from open_webui.utils.ex_settings import resolve_ex_settings
+from open_webui.utils import ex_rejected
 from open_webui.models.tools import Tools as ToolStore
 from open_webui.utils.ex_trim import gate_features
 from open_webui.utils.ex_loop_guard import refused_call_note, would_repeat
@@ -5322,6 +5323,17 @@ async def streaming_chat_response_handler(response, ctx):
                                                     }
                                                 )
 
+                                    # A tool call the engine refused because the name was
+                                    # never declared. Strata returns it as text plus this marker,
+                                    # so the turn has no tool calls and the loop would end with
+                                    # raw <tool_call> markup printed as prose. Remember it here
+                                    # and recover below instead.
+                                    _rej = delta.get('strata_rejected_tool_calls') or (
+                                        choices[0].get('strata_rejected_tool_calls')
+                                    )
+                                    if _rej:
+                                        ex_rejected_seen.extend(_rej)
+
                                     delta_tool_calls = delta.get('tool_calls', None)
                                     if delta_tool_calls:
                                         for delta_tool_call in delta_tool_calls:
@@ -5919,6 +5931,11 @@ async def streaming_chat_response_handler(response, ctx):
                 # has reshaped the list and the positions no longer match.
                 ex_measured_ids = {message.get('id') for message in messages}
                 ex_gate_retries = 0
+                # Tool calls the engine rejected as undeclared, collected per turn so one
+                # correction can be issued instead of the turn dying on the markup.
+                ex_rejected_seen = []
+                ex_rejected_retries = 0
+                ex_declared = ex_rejected.declared_names(form_data.get('tools'))
 
                 # Check if citations are enabled for this model
                 citations_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get(
@@ -5968,166 +5985,260 @@ async def streaming_chat_response_handler(response, ctx):
                             }
                         )
 
-                while tool_calls and (
-                    max_tool_call_iterations is None or tool_call_iterations < max_tool_call_iterations
-                ):
-                    tool_call_iterations += 1
+                # ex_rejected_recover. Strata refuses a tool call whose name was never declared,
+                # returns the markup as text, and reports the names in
+                # strata_rejected_tool_calls. Without this the loop below sees no tool calls and
+                # the turn ends with raw markup in the answer. One correction is issued: the
+                # declared spelling for any name that resolves, and an explicit list of what is
+                # actually available for any that does not. Capped at one retry per turn so a
+                # model that keeps guessing cannot spin.
+                if ex_rejected_seen and not tool_calls and ex_rejected_retries < 1 and tool_call_iterations > 0:
+                    ex_rejected_retries += 1
+                    ex_plan = ex_rejected.plan(ex_rejected_seen, ex_declared)
+                    ex_note = ex_rejected.correction_note(ex_plan, ex_declared)
+                    log.warning(
+                        'EX rejected tool call(s) from the engine: fixable=%s unknown=%s; '
+                        'issuing one correction and retrying instead of ending the turn',
+                        ex_plan.get('fixable'), ex_plan.get('unknown'),
+                    )
+                    if ex_note:
+                        ex_note = ex_note + chr(10) + chr(10) + 'Declared tools in this chat: ' + (
+                            ex_rejected.available_summary(ex_declared)
+                        )
+                        messages.append({'role': 'system', 'content': ex_note})
+                        form_data['messages'] = list(messages)
+                        if event_emitter:
+                            await event_emitter({
+                                'type': 'status',
+                                'data': {
+                                    'action': 'ex_tool_name_correction',
+                                    'description': (
+                                        'A tool call was refused because the name was not declared. '
+                                        'Correcting the name and retrying this step.'
+                                    ),
+                                    'done': True,
+                                },
+                            })
+                        # Drop the markup from the answer so the retry does not carry it forward as
+                        # if the model had already asked for it.
+                        ex_rejected_seen.clear()
 
-                    # EX loop guard. Detection at the iteration boundary, not after the loop
-                    # already happened. Mid-reasoning injection is impossible, so the honest
-                    # form is: detect here, then insert a deterministic note before the next
-                    # request, at an index that keeps tool call/output pairing intact.
-                    ex_guard_hit = None
-                    if ex_settings.get('loopGuard'):
-                        try:
-                            guard = loop_check(
-                                prior_output + output,
-                                messages,
-                                ex_settings,
-                                available_tools=set(metadata.get('tools', {}) or {}),
+                # ex_rejected_retry: one retry around the tool phase. A tool call the engine
+                # refused as undeclared leaves tool_calls empty, so the while below can never
+                # re-enter; the second pass appends the correction note and re-runs instead.
+                for ex_rejected_try in range(2):
+                    if ex_rejected_try:
+                        ex_plan = ex_rejected.plan(ex_rejected_seen, ex_declared)
+                        ex_note = ex_rejected.correction_note(ex_plan, ex_declared)
+                        log.warning(
+                            'EX retrying once after rejected tool call(s): fixable=%s unknown=%s',
+                            ex_plan.get('fixable'), ex_plan.get('unknown'),
+                        )
+                        if ex_note and ex_settings.get('rejectedToolRetry', True):
+                            ex_note = ex_note + chr(10) + chr(10) + 'Declared tools in this chat: ' + (
+                                ex_rejected.available_summary(ex_declared)
                             )
-                            if guard['hit'].get('verdict') != 'clean' and guard['note']:
-                                ex_guard_hit = guard
-                                insert_at = guard['insert_at']
-                                shape = shape_retry_decision(
+                            messages.append({'role': 'system', 'content': ex_note})
+                            form_data['messages'] = list(messages)
+                            if event_emitter:
+                                await event_emitter({
+                                    'type': 'status',
+                                    'data': {
+                                        'action': 'ex_tool_name_correction',
+                                        'description': (
+                                            'A tool call was refused because the name was not '
+                                            'declared. Correcting it and retrying this step.'
+                                        ),
+                                        'done': True,
+                                    },
+                                })
+                        else:
+                            break
+                        ex_rejected_seen.clear()
+                        tool_calls = []
+
+                    while tool_calls and (
+                        max_tool_call_iterations is None or tool_call_iterations < max_tool_call_iterations
+                    ):
+                        tool_call_iterations += 1
+
+                        # EX loop guard. Detection at the iteration boundary, not after the loop
+                        # already happened. Mid-reasoning injection is impossible, so the honest
+                        # form is: detect here, then insert a deterministic note before the next
+                        # request, at an index that keeps tool call/output pairing intact.
+                        ex_guard_hit = None
+                        if ex_settings.get('loopGuard'):
+                            try:
+                                guard = loop_check(
+                                    prior_output + output,
+                                    messages,
                                     ex_settings,
-                                    guard.get('markup') or {},
-                                    attempt=tool_call_iterations,
-                                    streamed=bool(output),
+                                    available_tools=set(metadata.get('tools', {}) or {}),
                                 )
-                                note_msg = {
-                                    # System role, matching the steering drain. A guard note written as a
-                                    # user turn reads as something the user said, and the model answers the
-                                    # note instead of the request it was given.
-                                    'role': 'system',
-                                    'content': guard['note'],
-                                    'exLoopGuard': True,
-                                }
-                                messages.insert(insert_at, note_msg)
-                                if shape.get('retry'):
-                                    ex_shape_retry_pending = True
-                                    log.warning(
-                                        'EX shape retry forced: %s (%s)',
-                                        guard['hit'].get('reason'),
-                                        ', '.join(shape.get('names') or []),
+                                if guard['hit'].get('verdict') != 'clean' and guard['note']:
+                                    ex_guard_hit = guard
+                                    insert_at = guard['insert_at']
+                                    shape = shape_retry_decision(
+                                        ex_settings,
+                                        guard.get('markup') or {},
+                                        attempt=tool_call_iterations,
+                                        streamed=bool(output),
                                     )
-                                log.warning('EX loop guard: %s', guard['hit'].get('reason'))
-                                if event_emitter:
+                                    note_msg = {
+                                        # System role, matching the steering drain. A guard note written as a
+                                        # user turn reads as something the user said, and the model answers the
+                                        # note instead of the request it was given.
+                                        'role': 'system',
+                                        'content': guard['note'],
+                                        'exLoopGuard': True,
+                                    }
+                                    messages.insert(insert_at, note_msg)
+                                    if shape.get('retry'):
+                                        ex_shape_retry_pending = True
+                                        log.warning(
+                                            'EX shape retry forced: %s (%s)',
+                                            guard['hit'].get('reason'),
+                                            ', '.join(shape.get('names') or []),
+                                        )
+                                    log.warning('EX loop guard: %s', guard['hit'].get('reason'))
+                                    if event_emitter:
+                                        await event_emitter(
+                                            {
+                                                'type': 'status',
+                                                'data': {
+                                                    'action': 'ex_loop_guard',
+                                                    'description': guard['hit'].get('reason'),
+                                                    'shape_retry': bool(shape.get('retry')),
+                                                    'done': True,
+                                                },
+                                            }
+                                        )
+                            except Exception:
+                                log.exception('EX loop guard check failed; continuing without steering')
+
+                        # Resolve dispatch before approvals and special handling such as ask_user.
+                        # EX steering drain. A message typed during generation cannot enter a half
+                        # finished thought, so it lands here, at the boundary where the tool loop
+                        # already rebuilds messages. The loop guard ran first, so a steering item goes
+                        # after it and outranks a detected loop for the next request.
+                        ex_steering = {}
+                        if ex_settings.get('steeringQueue') and ex_settings.get('drainSteeringAtBoundary'):
+                            try:
+                                ex_steering = drain_steering(
+                                    messages,
+                                    metadata.get('chat_id', ''),
+                                    ex_settings,
+                                    DATA_DIR,
+                                    turn_open=True,
+                                )
+                                if ex_steering.get('applied') and event_emitter:
                                     await event_emitter(
                                         {
                                             'type': 'status',
                                             'data': {
-                                                'action': 'ex_loop_guard',
-                                                'description': guard['hit'].get('reason'),
-                                                'shape_retry': bool(shape.get('retry')),
+                                                'action': 'ex_steering',
+                                                'description': f"injected {len(ex_steering['applied'])} steering message(s) before the next request",
                                                 'done': True,
                                             },
                                         }
                                     )
-                        except Exception:
-                            log.exception('EX loop guard check failed; continuing without steering')
+                                if ex_steering.get('stop_turn'):
+                                    log.info('EX steering: turn ended by steering request')
+                                    break
+                            except Exception:
+                                log.exception('EX steering drain failed; continuing without steering')
 
-                    # Resolve dispatch before approvals and special handling such as ask_user.
-                    # EX steering drain. A message typed during generation cannot enter a half
-                    # finished thought, so it lands here, at the boundary where the tool loop
-                    # already rebuilds messages. The loop guard ran first, so a steering item goes
-                    # after it and outranks a detected loop for the next request.
-                    ex_steering = {}
-                    if ex_settings.get('steeringQueue') and ex_settings.get('drainSteeringAtBoundary'):
-                        try:
-                            ex_steering = drain_steering(
-                                messages,
-                                metadata.get('chat_id', ''),
-                                ex_settings,
-                                DATA_DIR,
-                                turn_open=True,
-                            )
-                            if ex_steering.get('applied') and event_emitter:
-                                await event_emitter(
+                        # An attempt that streamed nothing can be replayed. An attempt that already
+                        # streamed items cannot, because a replay would append the same text twice.
+                        # Items appended after this index belong to this attempt. The partial output
+                        # rule needs a measured value, not a constant; a hardcoded False would let a
+                        # replay duplicate text that already streamed.
+                        ex_attempt_output_start = len(output)
+                        ex_attempt_streamed = False
+                        ex_batch = tool_calls.pop(0) if tool_calls else []
+
+                        if ex_steering.get('refuse_next_call'):
+                            for tool_call in ex_batch:
+                                output.append(
                                     {
-                                        'type': 'status',
-                                        'data': {
-                                            'action': 'ex_steering',
-                                            'description': f"injected {len(ex_steering['applied'])} steering message(s) before the next request",
-                                            'done': True,
-                                        },
+                                        'type': 'function_call_output',
+                                        'id': output_id('fco'),
+                                        'call_id': tool_call.get('id') or output_id('fc'),
+                                        'output': [{'type': 'input_text', 'text': 'Refused by steering request before execution.'}],
+                                        'status': 'refused',
                                     }
                                 )
-                            if ex_steering.get('stop_turn'):
-                                log.info('EX steering: turn ended by steering request')
-                                break
-                        except Exception:
-                            log.exception('EX steering drain failed; continuing without steering')
+                            continue
 
-                    # An attempt that streamed nothing can be replayed. An attempt that already
-                    # streamed items cannot, because a replay would append the same text twice.
-                    # Items appended after this index belong to this attempt. The partial output
-                    # rule needs a measured value, not a constant; a hardcoded False would let a
-                    # replay duplicate text that already streamed.
-                    ex_attempt_output_start = len(output)
-                    ex_attempt_streamed = False
-                    ex_batch = tool_calls.pop(0) if tool_calls else []
+                        if ex_steering.get('swap_next_tool') and ex_batch:
+                            ex_batch[0].setdefault('function', {})['name'] = ex_steering['swap_next_tool']
+                            log.info('EX steering: next call swapped to %s', ex_steering['swap_next_tool'])
 
-                    if ex_steering.get('refuse_next_call'):
+                        response_tool_calls = []
+                        output_by_call_id = {
+                            item.get('call_id'): item for item in output if item.get('type') == 'function_call'
+                        }
                         for tool_call in ex_batch:
-                            output.append(
-                                {
-                                    'type': 'function_call_output',
-                                    'id': output_id('fco'),
-                                    'call_id': tool_call.get('id') or output_id('fc'),
-                                    'output': [{'type': 'input_text', 'text': 'Refused by steering request before execution.'}],
-                                    'status': 'refused',
-                                }
+                            error = resolve_tool_call(tool_call, metadata.get('tools', {}))
+                            call_id = tool_call.get('id') or output_id('fc')
+                            tool_call['id'] = call_id
+                            function = tool_call.get('function', {})
+                            item = output_by_call_id.get(call_id)
+                            if item is None:
+                                item = {'type': 'function_call', 'id': call_id, 'call_id': call_id}
+                                output.append(item)
+                                output_by_call_id[call_id] = item
+                            item.update(
+                                name=function.get('name', ''),
+                                arguments=function.get('arguments', '{}'),
+                                status='failed' if error else item.get('status', 'in_progress'),
                             )
-                        continue
+                            if 'provider_function' in tool_call:
+                                item['provider_function'] = tool_call['provider_function']
+                            if error:
+                                output.append(
+                                    {
+                                        'type': 'function_call_output',
+                                        'id': output_id('fco'),
+                                        'call_id': call_id,
+                                        'output': [{'type': 'input_text', 'text': error}],
+                                        'status': 'failed',
+                                    }
+                                )
+                            else:
+                                response_tool_calls.append(tool_call)
 
-                    if ex_steering.get('swap_next_tool') and ex_batch:
-                        ex_batch[0].setdefault('function', {})['name'] = ex_steering['swap_next_tool']
-                        log.info('EX steering: next call swapped to %s', ex_steering['swap_next_tool'])
+                        ask_user_staged, ask_user_error = stage_ask_user_tool_calls(response_tool_calls, output, output_id)
+                        if ask_user_error:
+                            response_tool_calls = [
+                                tool_call
+                                for tool_call in response_tool_calls
+                                if tool_call.get('function', {}).get('name') != 'ask_user'
+                            ]
+                        elif ask_user_staged and save_to_chat:
+                            if is_saved_chat_id(metadata.get('chat_id')) and metadata.get('message_id'):
+                                await pause_for_tool_approval(
+                                    metadata['chat_id'],
+                                    metadata['message_id'],
+                                    full_output(),
+                                    form_data,
+                                    metadata,
+                                )
+                            await event_emitter({'type': 'chat:completion', 'data': {'output': full_output()}})
+                            return
+                        elif ask_user_staged:
+                            # Live questions await the socket callback, not the saved-chat resolver.
+                            for item in output:
+                                if item.get('name') == 'ask_user' and item.get('status') == 'pending':
+                                    item['status'] = 'in_progress'
 
-                    response_tool_calls = []
-                    output_by_call_id = {
-                        item.get('call_id'): item for item in output if item.get('type') == 'function_call'
-                    }
-                    for tool_call in ex_batch:
-                        error = resolve_tool_call(tool_call, metadata.get('tools', {}))
-                        call_id = tool_call.get('id') or output_id('fc')
-                        tool_call['id'] = call_id
-                        function = tool_call.get('function', {})
-                        item = output_by_call_id.get(call_id)
-                        if item is None:
-                            item = {'type': 'function_call', 'id': call_id, 'call_id': call_id}
-                            output.append(item)
-                            output_by_call_id[call_id] = item
-                        item.update(
-                            name=function.get('name', ''),
-                            arguments=function.get('arguments', '{}'),
-                            status='failed' if error else item.get('status', 'in_progress'),
-                        )
-                        if 'provider_function' in tool_call:
-                            item['provider_function'] = tool_call['provider_function']
-                        if error:
-                            output.append(
-                                {
-                                    'type': 'function_call_output',
-                                    'id': output_id('fco'),
-                                    'call_id': call_id,
-                                    'output': [{'type': 'input_text', 'text': error}],
-                                    'status': 'failed',
-                                }
-                            )
-                        else:
-                            response_tool_calls.append(tool_call)
-
-                    ask_user_staged, ask_user_error = stage_ask_user_tool_calls(response_tool_calls, output, output_id)
-                    if ask_user_error:
-                        response_tool_calls = [
-                            tool_call
-                            for tool_call in response_tool_calls
-                            if tool_call.get('function', {}).get('name') != 'ask_user'
-                        ]
-                    elif ask_user_staged and save_to_chat:
-                        if is_saved_chat_id(metadata.get('chat_id')) and metadata.get('message_id'):
+                        tool_approval_mode = metadata.get('params', {}).get('tool_approval_mode', 'full')
+                        if (
+                            response_tool_calls
+                            and tool_approval_mode == 'ask'
+                            and is_saved_chat_id(metadata.get('chat_id'))
+                            and metadata.get('message_id')
+                        ):
                             await pause_for_tool_approval(
                                 metadata['chat_id'],
                                 metadata['message_id'],
@@ -6135,676 +6246,657 @@ async def streaming_chat_response_handler(response, ctx):
                                 form_data,
                                 metadata,
                             )
-                        await event_emitter({'type': 'chat:completion', 'data': {'output': full_output()}})
-                        return
-                    elif ask_user_staged:
-                        # Live questions await the socket callback, not the saved-chat resolver.
-                        for item in output:
-                            if item.get('name') == 'ask_user' and item.get('status') == 'pending':
-                                item['status'] = 'in_progress'
+                            await event_emitter(
+                                {
+                                    'type': 'chat:completion',
+                                    'data': {
+                                        'output': full_output(),
+                                    },
+                                }
+                            )
+                            return
 
-                    tool_approval_mode = metadata.get('params', {}).get('tool_approval_mode', 'full')
-                    if (
-                        response_tool_calls
-                        and tool_approval_mode == 'ask'
-                        and is_saved_chat_id(metadata.get('chat_id'))
-                        and metadata.get('message_id')
-                    ):
-                        await pause_for_tool_approval(
-                            metadata['chat_id'],
-                            metadata['message_id'],
-                            full_output(),
-                            form_data,
-                            metadata,
-                        )
-                        await event_emitter(
-                            {
-                                'type': 'chat:completion',
-                                'data': {
-                                    'output': full_output(),
-                                },
-                            }
-                        )
-                        return
+                        await emit_output()
 
-                    await emit_output()
+                        results = []
 
-                    results = []
+                        # Provider calls have been resolved and staged; execute their saved items directly.
+                        response_tool_calls = [output_by_call_id[call['id']] for call in response_tool_calls]
+                        delegate_calls = [call for call in response_tool_calls if call.get('name') == 'delegate_task']
+                        tool_results = {}
 
-                    # Provider calls have been resolved and staged; execute their saved items directly.
-                    response_tool_calls = [output_by_call_id[call['id']] for call in response_tool_calls]
-                    delegate_calls = [call for call in response_tool_calls if call.get('name') == 'delegate_task']
-                    tool_results = {}
-
-                    # EX loop refusal. The note injected at the iteration boundary asks the model
-                    # to stop; this is what happens when it does not. A call whose exact
-                    # signature has already run twice is not executed a third time, and the
-                    # model gets a deterministic refusal as that call's result.
-                    #
-                    # Refusing rather than detecting-after-the-fact is the whole point. Running
-                    # the call and then reporting that it repeated spends a full generation to
-                    # learn something already known. The threshold counts total occurrences, so
-                    # the third identical attempt is the one that fails, which is the behaviour
-                    # RiRi asked for.
-                    refused_call_ids = set()
-                    if ex_settings.get('loopGuard'):
-                        try:
-                            for tool_call in response_tool_calls:
-                                if would_repeat(
-                                    prior_output + output,
-                                    tool_call.get('name', ''),
-                                    tool_call.get('arguments', ''),
-                                ):
-                                    refused_call_ids.add(tool_call['call_id'])
-                                    log.warning(
-                                        'EX loop guard refused repeat call to %s',
+                        # EX loop refusal. The note injected at the iteration boundary asks the model
+                        # to stop; this is what happens when it does not. A call whose exact
+                        # signature has already run twice is not executed a third time, and the
+                        # model gets a deterministic refusal as that call's result.
+                        #
+                        # Refusing rather than detecting-after-the-fact is the whole point. Running
+                        # the call and then reporting that it repeated spends a full generation to
+                        # learn something already known. The threshold counts total occurrences, so
+                        # the third identical attempt is the one that fails, which is the behaviour
+                        # RiRi asked for.
+                        refused_call_ids = set()
+                        if ex_settings.get('loopGuard'):
+                            try:
+                                for tool_call in response_tool_calls:
+                                    if would_repeat(
+                                        prior_output + output,
                                         tool_call.get('name', ''),
+                                        tool_call.get('arguments', ''),
+                                    ):
+                                        refused_call_ids.add(tool_call['call_id'])
+                                        log.warning(
+                                            'EX loop guard refused repeat call to %s',
+                                            tool_call.get('name', ''),
+                                        )
+                                        if event_emitter:
+                                            await event_emitter(
+                                                {
+                                                    'type': 'status',
+                                                    'data': {
+                                                        'action': 'ex_loop_guard',
+                                                        'description': refused_call_note(
+                                                            tool_call.get('name', '')
+                                                        ),
+                                                        'done': True,
+                                                    },
+                                                }
+                                            )
+                            except Exception:
+                                log.exception('EX loop guard refusal check failed; running calls unguarded')
+
+                        for tool_call in response_tool_calls:
+                            if tool_call['call_id'] in refused_call_ids:
+                                # Shape matches an executed call so the downstream unpack is unchanged.
+                                tool_results[tool_call['call_id']] = (
+                                    {},
+                                    refused_call_note(tool_call.get('name', '')),
+                                    None,
+                                    None,
+                                    False,
+                                )
+                            elif tool_call.get('name') != 'delegate_task':
+                                tool_results[tool_call['call_id']] = await execute_tool_call(
+                                    form_data, metadata, event_caller, tool_call
+                                )
+                        tool_results.update(
+                            zip(
+                                [tool_call['call_id'] for tool_call in delegate_calls],
+                                await asyncio.gather(
+                                    *(
+                                        (
+                                            {},
+                                            refused_call_note(tool_call.get('name', '')),
+                                            None,
+                                            None,
+                                            False,
+                                        )
+                                        if tool_call['call_id'] in refused_call_ids
+                                        else execute_tool_call(form_data, metadata, event_caller, tool_call)
+                                        for tool_call in delegate_calls
+                                    )
+                                ),
+                            )
+                        )
+
+                        for tool_call in response_tool_calls:
+                            tool_call_id = tool_call['call_id']
+                            tool_function_name = tool_call.get('name', '')
+                            tool_function_params, tool_result, tool, tool_type, direct_tool = tool_results[
+                                tool_call['call_id']
+                            ]
+                            if tool_result is None:
+                                results.append(
+                                    {
+                                        'tool_call_id': tool_call_id,
+                                        'content': (
+                                            'Error: Tool call arguments could not be parsed. The model generated '
+                                            f'malformed or incomplete JSON for `{tool_function_name}`. Please try again.'
+                                        ),
+                                    }
+                                )
+                                continue
+
+                            terminal_file_result = build_terminal_file_tool_result(
+                                tool_function_name,
+                                tool_function_params,
+                                tool_result,
+                                tool,
+                                metadata,
+                            )
+                            if terminal_file_result:
+                                tool_result = terminal_file_result
+
+                            tool_result, tool_result_files, tool_result_embeds = await process_tool_result(
+                                request,
+                                tool_function_name,
+                                tool_result,
+                                tool_type,
+                                direct_tool,
+                                metadata,
+                                user,
+                            )
+
+                            await terminal_event_handler(
+                                tool_function_name,
+                                tool_function_params,
+                                tool_result,
+                                event_emitter,
+                            )
+
+                            # Extract citation sources from tool results
+                            if citations_enabled and tool_function_name in CITATION_TOOL_NAMES and tool_result:
+                                try:
+                                    citation_sources = get_citation_source_from_tool_result(
+                                        tool_name=tool_function_name,
+                                        tool_params=tool_function_params,
+                                        tool_result=tool_result,
+                                        tool_id=tool.get('tool_id', '') if tool else '',
+                                    )
+                                    tool_call_sources.extend(citation_sources)
+                                except Exception as e:
+                                    log.exception(f'Error extracting citation source: {e}')
+
+                            results.append(
+                                {
+                                    'tool_call_id': tool_call_id,
+                                    'content': tool_result_content(tool_result),
+                                    **({'files': tool_result_files} if tool_result_files else {}),
+                                    **({'embeds': tool_result_embeds} if tool_result_embeds else {}),
+                                }
+                            )
+
+                        result_status_by_call_id = {}
+                        for result in results:
+                            output_parts = [{'type': 'input_text', 'text': result.get('content', '')}]
+                            local_output_status = (
+                                'failed' if _is_tool_result_error(result.get('content', '')) else 'completed'
+                            )
+                            result_status_by_call_id[result.get('tool_call_id', '')] = local_output_status
+
+                            # Data-URI images: LLM only. File-URL images: LLM and frontend. Other files: frontend.
+                            display_files = []
+                            for file_item in result.get('files', []):
+                                if file_item.get('type') == 'image' and file_item.get('url', '').startswith('data:'):
+                                    # LLM-only: add as input_image part, not frontend display output.
+                                    image_url = await store_tool_result_image(request, file_item['url'], metadata, user)
+                                    output_parts.append({'type': 'input_image', 'image_url': image_url})
+                                else:
+                                    display_files.append(file_item)
+                                    if file_item.get('type') == 'image' and file_item.get('url'):
+                                        output_parts.append({'type': 'input_image', 'image_url': file_item['url']})
+
+                            output.append(
+                                {
+                                    'type': 'function_call_output',
+                                    'id': output_id('fco'),
+                                    'call_id': result.get('tool_call_id', ''),
+                                    'output': output_parts,
+                                    'status': local_output_status,
+                                    **({'files': display_files} if display_files else {}),
+                                    **({'embeds': result.get('embeds')} if result.get('embeds') else {}),
+                                }
+                            )
+
+                        for item in response_tool_calls:
+                            item['status'] = result_status_by_call_id.get(item['call_id'], 'completed')
+
+                        # Emit citation sources to the frontend for display
+                        if citations_enabled:
+                            for source in tool_call_sources:
+                                await event_emitter({'type': 'source', 'data': source})
+
+                            # Rebuild source context from the saved prompts so it never accumulates.
+                            all_tool_call_sources.extend(tool_call_sources)
+                            if all_tool_call_sources and user_message:
+                                base_user_prompt = metadata.get('base_user_prompt') or user_message
+                                set_last_user_message_content(
+                                    base_user_prompt,
+                                    form_data['messages'],
+                                )
+                                if base_system_prompt is not None:
+                                    if get_system_message(form_data['messages']):
+                                        replace_system_message_content(
+                                            base_system_prompt,
+                                            form_data['messages'],
+                                        )
+                                    else:
+                                        form_data['messages'] = add_or_update_system_message(
+                                            base_system_prompt,
+                                            form_data['messages'],
+                                        )
+                                else:
+                                    replace_system_message_content('', form_data['messages'])
+
+                                # Build context: file sources with content,
+                                # tool sources as citation markers only.
+                                source_ids = {}
+                                source_context = get_source_context(
+                                    metadata.get('sources', []), source_ids
+                                ) + get_source_context(
+                                    all_tool_call_sources,
+                                    source_ids,
+                                    include_content=False,
+                                )
+                                source_context = source_context.strip()
+                                if source_context:
+                                    rag_content = await rag_template(
+                                        await Config.get('rag.template'),
+                                        source_context,
+                                        user_message,
+                                    )
+                                    if RAG_SYSTEM_CONTEXT:
+                                        form_data['messages'] = add_or_update_system_message(
+                                            rag_content,
+                                            form_data['messages'],
+                                            append=True,
+                                        )
+                                    else:
+                                        form_data['messages'] = add_or_update_user_message(
+                                            rag_content,
+                                            form_data['messages'],
+                                            append=False,
+                                        )
+                            tool_call_sources.clear()
+
+                        await emit_output()
+
+                        try:
+                            new_form_data = {
+                                **form_data,
+                                'stream': True,
+                                'metadata': metadata,
+                            }
+
+                            if ENABLE_RESPONSES_API_STATEFUL and last_response_id:
+                                system_message = get_system_message(form_data['messages'])
+                                new_form_data['messages'] = (
+                                    [system_message] if system_message else []
+                                ) + convert_output_to_messages(
+                                    strip_tool_images(output, model), raw=True, reasoning_format=get_reasoning_format(model)
+                                )
+                                new_form_data['previous_response_id'] = last_response_id
+                            else:
+                                tool_messages = convert_output_to_messages(
+                                    strip_tool_images(output, model),
+                                    raw=True,
+                                    reasoning_format=get_reasoning_format(model),
+                                    flatten_tool_images=True,
+                                )
+
+                                # Chat Completions providers don't support multimodal
+                                # tool messages.  Extract images into a user message.
+                                image_urls = []
+                                for message in tool_messages:
+                                    if message.get('role') == 'tool' and isinstance(message.get('content'), list):
+                                        text_parts = []
+                                        for part in message['content']:
+                                            if part.get('type') == 'input_text':
+                                                text_parts.append(part.get('text', ''))
+                                            elif part.get('type') == 'input_image':
+                                                image_urls.append(part.get('image_url', ''))
+                                        message['content'] = ''.join(text_parts)
+
+                                if current_usage and tool_messages:
+                                    tool_messages[0]['usage'] = current_usage
+
+                                # Refresh citation context without restoring compacted history.
+                                user_prompt = get_last_user_message_item(form_data['messages'])
+                                for message in messages:
+                                    if message.get('contextSummary') and message.get('role') == 'user' and user_prompt:
+                                        message.update(user_prompt)
+                                messages = [
+                                    *[message for message in form_data['messages'] if message.get('role') == 'system'],
+                                    *[message for message in messages if message.get('role') != 'system'],
+                                    *tool_messages,
+                                ]
+
+                                if image_urls:
+                                    messages.append(
+                                        {
+                                            'role': 'user',
+                                            'content': [
+                                                {
+                                                    'type': 'text',
+                                                    'text': 'Here are the images from the tool results above. Please analyze them.',
+                                                },
+                                                *[{'type': 'image_url', 'image_url': {'url': url}} for url in image_urls],
+                                            ],
+                                        }
+                                    )
+
+                                # Use the existing checkpoint format internally and strip it from the provider payload.
+                                def get_request_messages(messages: list[dict]) -> list[dict]:
+                                    request_messages = process_messages_with_output(messages)
+                                    context_summary = next(
+                                        (
+                                            message['contextSummary']
+                                            for message in messages
+                                            if message.get('contextSummary')
+                                        ),
+                                        None,
+                                    )
+                                    if context_summary:
+                                        request_messages.insert(
+                                            1 if request_messages and request_messages[0].get('role') == 'system' else 0,
+                                            {'role': 'system', 'content': f'[CONVERSATION SUMMARY]\n{context_summary}'},
+                                        )
+                                    return request_messages
+
+                                new_form_data['messages'] = get_request_messages(messages)
+                                try:
+                                    user_messages = [
+                                        (message, message.get('content'))
+                                        for message in messages
+                                        if user_prompt
+                                        and message.get('role') == 'user'
+                                        and message.get('content') == user_prompt.get('content')
+                                    ]
+                                    summary_form_data = None
+                                    if not filter_functions:
+                                        summary_form_data = normalize_messages_for_model(
+                                            await convert_url_images_to_base64({**new_form_data}, user=user)
+                                        )
+                                    try:
+                                        # Summarize the user's text, then restore source context for the model.
+                                        for message, _ in user_messages:
+                                            message['content'] = copy.deepcopy(message.get('content'))
+                                            set_last_user_message_content(
+                                                metadata.get('base_user_prompt') or user_message, [message]
+                                            )
+                                        messages, context_summary, compacted = await compact_messages_for_request(
+                                            request,
+                                            summary_form_data,
+                                            user,
+                                            messages,
+                                            metadata,
+                                            form_data['model'],
+                                            request.app.state.MODELS,
+                                            bypass_system_prompt=True,
+                                        )
+                                    finally:
+                                        for message, content in user_messages:
+                                            message['content'] = content
+                                    if compacted:
+                                        if user_prompt is not None:
+                                            messages = [message for message in messages if message != user_prompt]
+                                            messages.insert(
+                                                1 if messages and messages[0].get('role') == 'system' else 0,
+                                                dict(user_prompt),
+                                            )
+                                        checkpoint = next(
+                                            idx for idx, message in enumerate(messages) if message.get('role') != 'system'
+                                        )
+                                        messages[checkpoint] = {**messages[checkpoint], 'contextSummary': context_summary}
+                                        new_form_data['messages'] = get_request_messages(messages)
+                                        output.append(
+                                            {
+                                                'type': 'open_webui:context_compaction',
+                                                'id': output_id('cc'),
+                                                'call_id': next(
+                                                    message['tool_calls'][0]['id']
+                                                    for message in messages
+                                                    if message.get('tool_calls')
+                                                ),
+                                                'summary': context_summary,
+                                            }
+                                        )
+                                        await emit_output()
+                                except Exception:
+                                    log.exception('Tool loop context compaction failed; keeping the current context')
+
+                            new_form_data = await convert_url_images_to_base64(new_form_data, user=user)
+
+                            if filter_functions:
+                                new_form_data, _ = await process_filter_functions(
+                                    request=request,
+                                    filter_context=filter_context,
+                                    filter_functions=filter_functions,
+                                    filter_type='request',
+                                    form_data=new_form_data,
+                                    extra_params=extra_params,
+                                )
+
+                            new_form_data = normalize_messages_for_model(new_form_data)
+
+                            # EX pre-send guard. The gate runs once per turn, in process_chat_payload,
+                            # on the list before any tool result for this turn existed. Every result
+                            # appended since that measurement is part of the request that is about to be
+                            # sent, and the engine counts it. Measuring once per turn is what let a
+                            # request with a small first measurement grow past the window and be refused
+                            # mid turn. Re-measure here, on the list as it will actually go out, and do
+                            # not send a request the gate cannot fit.
+                            iteration_messages = new_form_data.get('messages') or []
+                            ex_send_ts = time.time()
+
+                            # EX agentic flush. When this is on, the list that goes out is rebuilt from
+                            # what this iteration needs, not carried forward. The memory of the earlier
+                            # turns is the journal on disk plus the index put back into the prompt, and
+                            # every tool result for this turn is capped so a single result cannot be
+                            # larger than the window. The engine is not being deceived; it is being sent
+                            # a new request, which is what a fresh prompt actually means.
+                            ex_flush_report = {'flushed': False}
+                            if ex_settings.get('agenticFlush') and tool_call_iterations > 0:
+                                iteration_messages, ex_flush_report = flush_prompt(
+                                    metadata.get('chat_id', ''),
+                                    iteration_messages,
+                                    ex_settings,
+                                    DATA_DIR,
+                                    ex_rollover.last_reasoning_block(
+                                        DATA_DIR, metadata.get('chat_id', ''), ex_settings
+                                    ),
+                                    form_data.get('prefill') or [],
+                                )
+
+                            appended_since = [
+                                message
+                                for message in iteration_messages
+                                if message.get('id') not in ex_measured_ids
+                            ]
+                            ex_since_tokens = sum(message_tokens(message) for message in appended_since)
+                            ex_tool_tokens_iter = max(
+                                0, estimate_tokens(json.dumps(form_data.get('tools') or []))
+                            )
+                            # The reconstruction block is already in the list from the turn boundary. This
+                            # call measures and shapes; it must not rewrite the reconstruction file once
+                            # per tool result, so the block is not re-injected here.
+                            ex_gate_settings = {**ex_settings, 'reconstructBlock': False}
+                            shaped_iter, ex_gate_iter = prompt_gate(
+                                DATA_DIR,
+                                metadata.get('chat_id', ''),
+                                iteration_messages,
+                                ex_gate_settings,
+                                getattr(user, 'id', '') or '',
+                                (new_form_data.get('params') or {}).get('max_tokens'),
+                                ex_tool_tokens_iter,
+                                since_tokens=ex_since_tokens,
+                                protect_tail=max(
+                                    ex_settings.get('shedProtectTail') or 4,
+                                    len(appended_since),
+                                ),
+                            )
+                            metadata['exContextWindow'] = {
+                                **(metadata.get('exContextWindow') or {}),
+                                'iteration': tool_call_iterations,
+                                'gate': ex_gate_iter,
+                                'flush': ex_flush_report,
+                            }
+                            if ex_gate_iter.get('refused') and ex_settings.get('retryGate') and ex_gate_retries < int(ex_settings.get('maxIterations') or 8):
+                                # A refusal is not retried by sending the same request again. One tightened
+                                # attempt: tool definitions dropped, results capped harder, answer from the
+                                # journal. Capped by the loop guard's maxIterations.
+                                ex_gate_retries += 1
+                                tightened = {**ex_gate_settings, 'dropToolsToFit': True, 'dropToolResultsToFit': True, 'toolResultCapTokens': max(512, int((ex_settings.get('toolResultCapTokens') or 12000) * 0.25))}
+                                shaped_retry, ex_gate_retry = prompt_gate(DATA_DIR, metadata.get('chat_id', ''), iteration_messages, tightened, getattr(user, 'id', '') or '', (new_form_data.get('params') or {}).get('max_tokens'), 0, since_tokens=ex_since_tokens, protect_tail=max(ex_settings.get('shedProtectTail') or 4, len(appended_since)))
+                                metadata['exContextWindow'] = {**(metadata.get('exContextWindow') or {}), 'gateRetry': ex_gate_retry}
+                                if not ex_gate_retry.get('refused'):
+                                    log.warning('EX gate retried once, iteration %d: tool block dropped, cap %d, measured %d', tool_call_iterations, tightened['toolResultCapTokens'], ex_gate_retry.get('measured_after'))
+                                    new_form_data['messages'] = shaped_retry
+                                    new_form_data['tools'] = []
+                                    ex_measured_ids = {message.get('id') for message in shaped_retry}
+                                else:
+                                    await emit_message_error('Context gate refused after one tightened retry. Nothing was sent.')
+                                    break
+                            elif ex_gate_iter.get('refused'):
+                                error_content = (
+                                    'Context gate refused this request before sending it. The prompt '
+                                    f'measures {ex_gate_iter.get("measured_after")} tokens against a '
+                                    f'{ex_gate_iter.get("ceiling")} token window, '
+                                    f'{ex_gate_iter.get("over_by")} over, after '
+                                    f'{ex_since_tokens} tokens of tool results were added since the last '
+                                    'measurement. Nothing was sent. The gate sheds what it can; the part '
+                                    'still inside the window is the part this turn is actually using.'
+                                )
+                                log.warning(
+                                    'EX pre-send guard, iteration %d: %s',
+                                    tool_call_iterations,
+                                    error_content,
+                                )
+                                await emit_message_error(error_content)
+                                break
+                            new_form_data['messages'] = shaped_iter
+                            # The tool definitions are counted by the engine. If the fit had to drop
+                            # them to make room, the send has to match what was measured; otherwise the
+                            # gate reports a number the engine will not agree with, which is exactly the
+                            # disagreement that killed the turn.
+                            if ex_gate_iter.get('tool_block_dropped'):
+                                new_form_data['tools'] = []
+                            ex_measured_ids = {message.get('id') for message in shaped_iter}
+
+                            # EX auto retry. Transport failures only, and only when nothing has
+                            # streamed for this attempt. The decision is the same policy the settings
+                            # tab reports; the partial output rule is enforced in the adapter.
+                            res = await retry_call(
+                                lambda: generate_chat_completion(
+                                    request,
+                                    new_form_data,
+                                    user,
+                                    bypass_system_prompt=True,
+                                ),
+                                ex_settings,
+                                streamed=ex_attempt_streamed,
+                            )
+
+                            if isinstance(res, StreamingResponse):
+                                # Reset response-relative output indices; keep prior output as the UI history prefix.
+                                prior_output = list(full_output())
+                                # Trim the trailing empty placeholder message
+                                # so it doesn't persist as a ghost item once
+                                # the new stream produces real content.
+                                if (
+                                    prior_output
+                                    and prior_output[-1].get('type') == 'message'
+                                    and prior_output[-1].get('status') == 'in_progress'
+                                ):
+                                    msg_parts = prior_output[-1].get('content', [])
+                                    if not msg_parts or (len(msg_parts) == 1 and not msg_parts[0].get('text', '').strip()):
+                                        prior_output.pop()
+                                output = []
+                                output_start = len(prior_output)
+                                try:
+                                    current_usage = await stream_body_handler(res, new_form_data)
+                                finally:
+                                    log_model_usage(request, user, form_data['model'], current_usage)
+
+                                    # The engine's own count for the list this gate measured is the only
+                                    # way to know whether the projection matches the tokenizer. Pair the
+                                    # two here, for the request that actually went out, and the next
+                                    # measurement uses the ratio.
+                                    ex_usage = current_usage if isinstance(current_usage, dict) else {}
+                                    ex_record = record_engine_count(
+                                        DATA_DIR,
+                                        metadata.get('chat_id', ''),
+                                        ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens'),
+                                        ex_gate_iter.get('measured_after'),
+                                    )
+                                    if ex_record.get('recorded'):
+                                        log.info(
+                                            'EX calibration chat=%s engine=%d gate=%d ratio=%.3f samples=%d',
+                                            metadata.get('chat_id', ''),
+                                            int(ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens') or 0),
+                                            int(ex_gate_iter.get('measured_after') or 0),
+                                            float(ex_record.get('ratio') or 1.0),
+                                            int(ex_record.get('samples') or 0),
+                                        )
+
+                                    if ex_settings.get('enginePhaseStats', True):
+                                        ex_phase = phase_stats(
+                                            ex_usage,
+                                            metadata.get('chat_id', ''),
+                                            tool_call_iterations,
+                                            ex_send_ts,
+                                            None,
+                                            ex_gate_iter,
+                                            ex_flush_report,
+                                            DATA_DIR,
+                                        )
+                                        metadata['exPhaseStats'] = ex_phase
+                                        log.info(
+                                            'EX phases chat=%s iter=%d %s',
+                                            metadata.get('chat_id', ''),
+                                            tool_call_iterations,
+                                            format_phase_line(ex_phase),
+                                        )
+                            elif getattr(res, 'status_code', 200) >= 400:
+                                await emit_message_error(get_message_error_content(get_response_error_detail(res)))
+                                break
+                            else:
+                                if ex_shape_retry_pending:
+                                    # The reply came back as text markup, not as an executable call. Ending the
+                                    # turn here would answer the user with a tool block. Re-request once with the
+                                    # note already inserted at the boundary.
+                                    ex_shape_retry_pending = False
+                                    continue
+                                break
+                        except Exception as e:
+                            error_content = get_message_error_content(e)
+                            log.exception('Tool-call continuation failed: %s', error_content)
+                            await emit_message_error(error_content)
+
+                            # EX recovery. The decision is made by the pure module, so the policy
+                            # is the same one the settings tab reports. Only the cursor is recorded
+                            # here; nothing re-runs the request from inside the request path.
+                            if ex_settings.get('resumeOnCrash') and metadata.get('chat_id'):
+                                try:
+                                    ex_attempt_streamed = len(output) > ex_attempt_output_start
+                                    verdict = decide(
+                                        e,
+                                        attempt=tool_call_iterations,
+                                        max_retries=ex_settings.get('maxRetries', 3),
+                                        shape_retries=ex_settings.get('shapeRetries', 1),
+                                        base_backoff=ex_settings.get('backoffSeconds', 2.0),
+                                    )
+                                    write_checkpoint(
+                                        DATA_DIR,
+                                        {
+                                            'chat_id': metadata.get('chat_id'),
+                                            'cursor': tool_call_iterations,
+                                            'done': [item.get('id') for item in prior_output if item.get('id')],
+                                            'pending': [call.get('id') for call in tool_calls if call.get('id')],
+                                            'last_error': error_content,
+                                            'class': verdict.get('class'),
+                                            'retry_permitted': retry_permitted(verdict, partial_output=ex_attempt_streamed),
+                                        },
                                     )
                                     if event_emitter:
                                         await event_emitter(
                                             {
                                                 'type': 'status',
                                                 'data': {
-                                                    'action': 'ex_loop_guard',
-                                                    'description': refused_call_note(
-                                                        tool_call.get('name', '')
-                                                    ),
+                                                    'action': 'ex_recovery',
+                                                    'description': f"{verdict.get('action')}: {verdict.get('reason')}",
                                                     'done': True,
                                                 },
                                             }
                                         )
-                        except Exception:
-                            log.exception('EX loop guard refusal check failed; running calls unguarded')
+                                except Exception:
+                                    log.exception('EX recovery checkpoint failed; the turn still ends normally')
 
-                    for tool_call in response_tool_calls:
-                        if tool_call['call_id'] in refused_call_ids:
-                            # Shape matches an executed call so the downstream unpack is unchanged.
-                            tool_results[tool_call['call_id']] = (
-                                {},
-                                refused_call_note(tool_call.get('name', '')),
-                                None,
-                                None,
-                                False,
-                            )
-                        elif tool_call.get('name') != 'delegate_task':
-                            tool_results[tool_call['call_id']] = await execute_tool_call(
-                                form_data, metadata, event_caller, tool_call
-                            )
-                    tool_results.update(
-                        zip(
-                            [tool_call['call_id'] for tool_call in delegate_calls],
-                            await asyncio.gather(
-                                *(
-                                    (
-                                        {},
-                                        refused_call_note(tool_call.get('name', '')),
-                                        None,
-                                        None,
-                                        False,
-                                    )
-                                    if tool_call['call_id'] in refused_call_ids
-                                    else execute_tool_call(form_data, metadata, event_caller, tool_call)
-                                    for tool_call in delegate_calls
-                                )
-                            ),
-                        )
-                    )
-
-                    for tool_call in response_tool_calls:
-                        tool_call_id = tool_call['call_id']
-                        tool_function_name = tool_call.get('name', '')
-                        tool_function_params, tool_result, tool, tool_type, direct_tool = tool_results[
-                            tool_call['call_id']
-                        ]
-                        if tool_result is None:
-                            results.append(
-                                {
-                                    'tool_call_id': tool_call_id,
-                                    'content': (
-                                        'Error: Tool call arguments could not be parsed. The model generated '
-                                        f'malformed or incomplete JSON for `{tool_function_name}`. Please try again.'
-                                    ),
-                                }
-                            )
-                            continue
-
-                        terminal_file_result = build_terminal_file_tool_result(
-                            tool_function_name,
-                            tool_function_params,
-                            tool_result,
-                            tool,
-                            metadata,
-                        )
-                        if terminal_file_result:
-                            tool_result = terminal_file_result
-
-                        tool_result, tool_result_files, tool_result_embeds = await process_tool_result(
-                            request,
-                            tool_function_name,
-                            tool_result,
-                            tool_type,
-                            direct_tool,
-                            metadata,
-                            user,
-                        )
-
-                        await terminal_event_handler(
-                            tool_function_name,
-                            tool_function_params,
-                            tool_result,
-                            event_emitter,
-                        )
-
-                        # Extract citation sources from tool results
-                        if citations_enabled and tool_function_name in CITATION_TOOL_NAMES and tool_result:
-                            try:
-                                citation_sources = get_citation_source_from_tool_result(
-                                    tool_name=tool_function_name,
-                                    tool_params=tool_function_params,
-                                    tool_result=tool_result,
-                                    tool_id=tool.get('tool_id', '') if tool else '',
-                                )
-                                tool_call_sources.extend(citation_sources)
-                            except Exception as e:
-                                log.exception(f'Error extracting citation source: {e}')
-
-                        results.append(
-                            {
-                                'tool_call_id': tool_call_id,
-                                'content': tool_result_content(tool_result),
-                                **({'files': tool_result_files} if tool_result_files else {}),
-                                **({'embeds': tool_result_embeds} if tool_result_embeds else {}),
-                            }
-                        )
-
-                    result_status_by_call_id = {}
-                    for result in results:
-                        output_parts = [{'type': 'input_text', 'text': result.get('content', '')}]
-                        local_output_status = (
-                            'failed' if _is_tool_result_error(result.get('content', '')) else 'completed'
-                        )
-                        result_status_by_call_id[result.get('tool_call_id', '')] = local_output_status
-
-                        # Data-URI images: LLM only. File-URL images: LLM and frontend. Other files: frontend.
-                        display_files = []
-                        for file_item in result.get('files', []):
-                            if file_item.get('type') == 'image' and file_item.get('url', '').startswith('data:'):
-                                # LLM-only: add as input_image part, not frontend display output.
-                                image_url = await store_tool_result_image(request, file_item['url'], metadata, user)
-                                output_parts.append({'type': 'input_image', 'image_url': image_url})
-                            else:
-                                display_files.append(file_item)
-                                if file_item.get('type') == 'image' and file_item.get('url'):
-                                    output_parts.append({'type': 'input_image', 'image_url': file_item['url']})
-
-                        output.append(
-                            {
-                                'type': 'function_call_output',
-                                'id': output_id('fco'),
-                                'call_id': result.get('tool_call_id', ''),
-                                'output': output_parts,
-                                'status': local_output_status,
-                                **({'files': display_files} if display_files else {}),
-                                **({'embeds': result.get('embeds')} if result.get('embeds') else {}),
-                            }
-                        )
-
-                    for item in response_tool_calls:
-                        item['status'] = result_status_by_call_id.get(item['call_id'], 'completed')
-
-                    # Emit citation sources to the frontend for display
-                    if citations_enabled:
-                        for source in tool_call_sources:
-                            await event_emitter({'type': 'source', 'data': source})
-
-                        # Rebuild source context from the saved prompts so it never accumulates.
-                        all_tool_call_sources.extend(tool_call_sources)
-                        if all_tool_call_sources and user_message:
-                            base_user_prompt = metadata.get('base_user_prompt') or user_message
-                            set_last_user_message_content(
-                                base_user_prompt,
-                                form_data['messages'],
-                            )
-                            if base_system_prompt is not None:
-                                if get_system_message(form_data['messages']):
-                                    replace_system_message_content(
-                                        base_system_prompt,
-                                        form_data['messages'],
-                                    )
-                                else:
-                                    form_data['messages'] = add_or_update_system_message(
-                                        base_system_prompt,
-                                        form_data['messages'],
-                                    )
-                            else:
-                                replace_system_message_content('', form_data['messages'])
-
-                            # Build context: file sources with content,
-                            # tool sources as citation markers only.
-                            source_ids = {}
-                            source_context = get_source_context(
-                                metadata.get('sources', []), source_ids
-                            ) + get_source_context(
-                                all_tool_call_sources,
-                                source_ids,
-                                include_content=False,
-                            )
-                            source_context = source_context.strip()
-                            if source_context:
-                                rag_content = await rag_template(
-                                    await Config.get('rag.template'),
-                                    source_context,
-                                    user_message,
-                                )
-                                if RAG_SYSTEM_CONTEXT:
-                                    form_data['messages'] = add_or_update_system_message(
-                                        rag_content,
-                                        form_data['messages'],
-                                        append=True,
-                                    )
-                                else:
-                                    form_data['messages'] = add_or_update_user_message(
-                                        rag_content,
-                                        form_data['messages'],
-                                        append=False,
-                                    )
-                        tool_call_sources.clear()
-
-                    await emit_output()
-
-                    try:
-                        new_form_data = {
-                            **form_data,
-                            'stream': True,
-                            'metadata': metadata,
-                        }
-
-                        if ENABLE_RESPONSES_API_STATEFUL and last_response_id:
-                            system_message = get_system_message(form_data['messages'])
-                            new_form_data['messages'] = (
-                                [system_message] if system_message else []
-                            ) + convert_output_to_messages(
-                                strip_tool_images(output, model), raw=True, reasoning_format=get_reasoning_format(model)
-                            )
-                            new_form_data['previous_response_id'] = last_response_id
-                        else:
-                            tool_messages = convert_output_to_messages(
-                                strip_tool_images(output, model),
-                                raw=True,
-                                reasoning_format=get_reasoning_format(model),
-                                flatten_tool_images=True,
-                            )
-
-                            # Chat Completions providers don't support multimodal
-                            # tool messages.  Extract images into a user message.
-                            image_urls = []
-                            for message in tool_messages:
-                                if message.get('role') == 'tool' and isinstance(message.get('content'), list):
-                                    text_parts = []
-                                    for part in message['content']:
-                                        if part.get('type') == 'input_text':
-                                            text_parts.append(part.get('text', ''))
-                                        elif part.get('type') == 'input_image':
-                                            image_urls.append(part.get('image_url', ''))
-                                    message['content'] = ''.join(text_parts)
-
-                            if current_usage and tool_messages:
-                                tool_messages[0]['usage'] = current_usage
-
-                            # Refresh citation context without restoring compacted history.
-                            user_prompt = get_last_user_message_item(form_data['messages'])
-                            for message in messages:
-                                if message.get('contextSummary') and message.get('role') == 'user' and user_prompt:
-                                    message.update(user_prompt)
-                            messages = [
-                                *[message for message in form_data['messages'] if message.get('role') == 'system'],
-                                *[message for message in messages if message.get('role') != 'system'],
-                                *tool_messages,
-                            ]
-
-                            if image_urls:
-                                messages.append(
-                                    {
-                                        'role': 'user',
-                                        'content': [
-                                            {
-                                                'type': 'text',
-                                                'text': 'Here are the images from the tool results above. Please analyze them.',
-                                            },
-                                            *[{'type': 'image_url', 'image_url': {'url': url}} for url in image_urls],
-                                        ],
-                                    }
-                                )
-
-                            # Use the existing checkpoint format internally and strip it from the provider payload.
-                            def get_request_messages(messages: list[dict]) -> list[dict]:
-                                request_messages = process_messages_with_output(messages)
-                                context_summary = next(
-                                    (
-                                        message['contextSummary']
-                                        for message in messages
-                                        if message.get('contextSummary')
-                                    ),
-                                    None,
-                                )
-                                if context_summary:
-                                    request_messages.insert(
-                                        1 if request_messages and request_messages[0].get('role') == 'system' else 0,
-                                        {'role': 'system', 'content': f'[CONVERSATION SUMMARY]\n{context_summary}'},
-                                    )
-                                return request_messages
-
-                            new_form_data['messages'] = get_request_messages(messages)
-                            try:
-                                user_messages = [
-                                    (message, message.get('content'))
-                                    for message in messages
-                                    if user_prompt
-                                    and message.get('role') == 'user'
-                                    and message.get('content') == user_prompt.get('content')
-                                ]
-                                summary_form_data = None
-                                if not filter_functions:
-                                    summary_form_data = normalize_messages_for_model(
-                                        await convert_url_images_to_base64({**new_form_data}, user=user)
-                                    )
-                                try:
-                                    # Summarize the user's text, then restore source context for the model.
-                                    for message, _ in user_messages:
-                                        message['content'] = copy.deepcopy(message.get('content'))
-                                        set_last_user_message_content(
-                                            metadata.get('base_user_prompt') or user_message, [message]
-                                        )
-                                    messages, context_summary, compacted = await compact_messages_for_request(
-                                        request,
-                                        summary_form_data,
-                                        user,
-                                        messages,
-                                        metadata,
-                                        form_data['model'],
-                                        request.app.state.MODELS,
-                                        bypass_system_prompt=True,
-                                    )
-                                finally:
-                                    for message, content in user_messages:
-                                        message['content'] = content
-                                if compacted:
-                                    if user_prompt is not None:
-                                        messages = [message for message in messages if message != user_prompt]
-                                        messages.insert(
-                                            1 if messages and messages[0].get('role') == 'system' else 0,
-                                            dict(user_prompt),
-                                        )
-                                    checkpoint = next(
-                                        idx for idx, message in enumerate(messages) if message.get('role') != 'system'
-                                    )
-                                    messages[checkpoint] = {**messages[checkpoint], 'contextSummary': context_summary}
-                                    new_form_data['messages'] = get_request_messages(messages)
-                                    output.append(
-                                        {
-                                            'type': 'open_webui:context_compaction',
-                                            'id': output_id('cc'),
-                                            'call_id': next(
-                                                message['tool_calls'][0]['id']
-                                                for message in messages
-                                                if message.get('tool_calls')
-                                            ),
-                                            'summary': context_summary,
-                                        }
-                                    )
-                                    await emit_output()
-                            except Exception:
-                                log.exception('Tool loop context compaction failed; keeping the current context')
-
-                        new_form_data = await convert_url_images_to_base64(new_form_data, user=user)
-
-                        if filter_functions:
-                            new_form_data, _ = await process_filter_functions(
-                                request=request,
-                                filter_context=filter_context,
-                                filter_functions=filter_functions,
-                                filter_type='request',
-                                form_data=new_form_data,
-                                extra_params=extra_params,
-                            )
-
-                        new_form_data = normalize_messages_for_model(new_form_data)
-
-                        # EX pre-send guard. The gate runs once per turn, in process_chat_payload,
-                        # on the list before any tool result for this turn existed. Every result
-                        # appended since that measurement is part of the request that is about to be
-                        # sent, and the engine counts it. Measuring once per turn is what let a
-                        # request with a small first measurement grow past the window and be refused
-                        # mid turn. Re-measure here, on the list as it will actually go out, and do
-                        # not send a request the gate cannot fit.
-                        iteration_messages = new_form_data.get('messages') or []
-                        ex_send_ts = time.time()
-
-                        # EX agentic flush. When this is on, the list that goes out is rebuilt from
-                        # what this iteration needs, not carried forward. The memory of the earlier
-                        # turns is the journal on disk plus the index put back into the prompt, and
-                        # every tool result for this turn is capped so a single result cannot be
-                        # larger than the window. The engine is not being deceived; it is being sent
-                        # a new request, which is what a fresh prompt actually means.
-                        ex_flush_report = {'flushed': False}
-                        if ex_settings.get('agenticFlush') and tool_call_iterations > 0:
-                            iteration_messages, ex_flush_report = flush_prompt(
-                                metadata.get('chat_id', ''),
-                                iteration_messages,
-                                ex_settings,
-                                DATA_DIR,
-                                ex_rollover.last_reasoning_block(
-                                    DATA_DIR, metadata.get('chat_id', ''), ex_settings
-                                ),
-                                form_data.get('prefill') or [],
-                            )
-
-                        appended_since = [
-                            message
-                            for message in iteration_messages
-                            if message.get('id') not in ex_measured_ids
-                        ]
-                        ex_since_tokens = sum(message_tokens(message) for message in appended_since)
-                        ex_tool_tokens_iter = max(
-                            0, estimate_tokens(json.dumps(form_data.get('tools') or []))
-                        )
-                        # The reconstruction block is already in the list from the turn boundary. This
-                        # call measures and shapes; it must not rewrite the reconstruction file once
-                        # per tool result, so the block is not re-injected here.
-                        ex_gate_settings = {**ex_settings, 'reconstructBlock': False}
-                        shaped_iter, ex_gate_iter = prompt_gate(
-                            DATA_DIR,
-                            metadata.get('chat_id', ''),
-                            iteration_messages,
-                            ex_gate_settings,
-                            getattr(user, 'id', '') or '',
-                            (new_form_data.get('params') or {}).get('max_tokens'),
-                            ex_tool_tokens_iter,
-                            since_tokens=ex_since_tokens,
-                            protect_tail=max(
-                                ex_settings.get('shedProtectTail') or 4,
-                                len(appended_since),
-                            ),
-                        )
-                        metadata['exContextWindow'] = {
-                            **(metadata.get('exContextWindow') or {}),
-                            'iteration': tool_call_iterations,
-                            'gate': ex_gate_iter,
-                            'flush': ex_flush_report,
-                        }
-                        if ex_gate_iter.get('refused') and ex_settings.get('retryGate') and ex_gate_retries < int(ex_settings.get('maxIterations') or 8):
-                            # A refusal is not retried by sending the same request again. One tightened
-                            # attempt: tool definitions dropped, results capped harder, answer from the
-                            # journal. Capped by the loop guard's maxIterations.
-                            ex_gate_retries += 1
-                            tightened = {**ex_gate_settings, 'dropToolsToFit': True, 'dropToolResultsToFit': True, 'toolResultCapTokens': max(512, int((ex_settings.get('toolResultCapTokens') or 12000) * 0.25))}
-                            shaped_retry, ex_gate_retry = prompt_gate(DATA_DIR, metadata.get('chat_id', ''), iteration_messages, tightened, getattr(user, 'id', '') or '', (new_form_data.get('params') or {}).get('max_tokens'), 0, since_tokens=ex_since_tokens, protect_tail=max(ex_settings.get('shedProtectTail') or 4, len(appended_since)))
-                            metadata['exContextWindow'] = {**(metadata.get('exContextWindow') or {}), 'gateRetry': ex_gate_retry}
-                            if not ex_gate_retry.get('refused'):
-                                log.warning('EX gate retried once, iteration %d: tool block dropped, cap %d, measured %d', tool_call_iterations, tightened['toolResultCapTokens'], ex_gate_retry.get('measured_after'))
-                                new_form_data['messages'] = shaped_retry
-                                new_form_data['tools'] = []
-                                ex_measured_ids = {message.get('id') for message in shaped_retry}
-                            else:
-                                await emit_message_error('Context gate refused after one tightened retry. Nothing was sent.')
-                                break
-                        elif ex_gate_iter.get('refused'):
-                            error_content = (
-                                'Context gate refused this request before sending it. The prompt '
-                                f'measures {ex_gate_iter.get("measured_after")} tokens against a '
-                                f'{ex_gate_iter.get("ceiling")} token window, '
-                                f'{ex_gate_iter.get("over_by")} over, after '
-                                f'{ex_since_tokens} tokens of tool results were added since the last '
-                                'measurement. Nothing was sent. The gate sheds what it can; the part '
-                                'still inside the window is the part this turn is actually using.'
-                            )
-                            log.warning(
-                                'EX pre-send guard, iteration %d: %s',
-                                tool_call_iterations,
-                                error_content,
-                            )
-                            await emit_message_error(error_content)
                             break
-                        new_form_data['messages'] = shaped_iter
-                        # The tool definitions are counted by the engine. If the fit had to drop
-                        # them to make room, the send has to match what was measured; otherwise the
-                        # gate reports a number the engine will not agree with, which is exactly the
-                        # disagreement that killed the turn.
-                        if ex_gate_iter.get('tool_block_dropped'):
-                            new_form_data['tools'] = []
-                        ex_measured_ids = {message.get('id') for message in shaped_iter}
 
-                        # EX auto retry. Transport failures only, and only when nothing has
-                        # streamed for this attempt. The decision is the same policy the settings
-                        # tab reports; the partial output rule is enforced in the adapter.
-                        res = await retry_call(
-                            lambda: generate_chat_completion(
-                                request,
-                                new_form_data,
-                                user,
-                                bypass_system_prompt=True,
-                            ),
-                            ex_settings,
-                            streamed=ex_attempt_streamed,
-                        )
-
-                        if isinstance(res, StreamingResponse):
-                            # Reset response-relative output indices; keep prior output as the UI history prefix.
-                            prior_output = list(full_output())
-                            # Trim the trailing empty placeholder message
-                            # so it doesn't persist as a ghost item once
-                            # the new stream produces real content.
-                            if (
-                                prior_output
-                                and prior_output[-1].get('type') == 'message'
-                                and prior_output[-1].get('status') == 'in_progress'
-                            ):
-                                msg_parts = prior_output[-1].get('content', [])
-                                if not msg_parts or (len(msg_parts) == 1 and not msg_parts[0].get('text', '').strip()):
-                                    prior_output.pop()
-                            output = []
-                            output_start = len(prior_output)
-                            try:
-                                current_usage = await stream_body_handler(res, new_form_data)
-                            finally:
-                                log_model_usage(request, user, form_data['model'], current_usage)
-
-                                # The engine's own count for the list this gate measured is the only
-                                # way to know whether the projection matches the tokenizer. Pair the
-                                # two here, for the request that actually went out, and the next
-                                # measurement uses the ratio.
-                                ex_usage = current_usage if isinstance(current_usage, dict) else {}
-                                ex_record = record_engine_count(
-                                    DATA_DIR,
-                                    metadata.get('chat_id', ''),
-                                    ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens'),
-                                    ex_gate_iter.get('measured_after'),
-                                )
-                                if ex_record.get('recorded'):
-                                    log.info(
-                                        'EX calibration chat=%s engine=%d gate=%d ratio=%.3f samples=%d',
-                                        metadata.get('chat_id', ''),
-                                        int(ex_usage.get('prompt_tokens') or ex_usage.get('input_tokens') or 0),
-                                        int(ex_gate_iter.get('measured_after') or 0),
-                                        float(ex_record.get('ratio') or 1.0),
-                                        int(ex_record.get('samples') or 0),
-                                    )
-
-                                if ex_settings.get('enginePhaseStats', True):
-                                    ex_phase = phase_stats(
-                                        ex_usage,
-                                        metadata.get('chat_id', ''),
-                                        tool_call_iterations,
-                                        ex_send_ts,
-                                        None,
-                                        ex_gate_iter,
-                                        ex_flush_report,
-                                        DATA_DIR,
-                                    )
-                                    metadata['exPhaseStats'] = ex_phase
-                                    log.info(
-                                        'EX phases chat=%s iter=%d %s',
-                                        metadata.get('chat_id', ''),
-                                        tool_call_iterations,
-                                        format_phase_line(ex_phase),
-                                    )
-                        elif getattr(res, 'status_code', 200) >= 400:
-                            await emit_message_error(get_message_error_content(get_response_error_detail(res)))
-                            break
-                        else:
-                            if ex_shape_retry_pending:
-                                # The reply came back as text markup, not as an executable call. Ending the
-                                # turn here would answer the user with a tool block. Re-request once with the
-                                # note already inserted at the boundary.
-                                ex_shape_retry_pending = False
-                                continue
-                            break
-                    except Exception as e:
-                        error_content = get_message_error_content(e)
-                        log.exception('Tool-call continuation failed: %s', error_content)
-                        await emit_message_error(error_content)
-
-                        # EX recovery. The decision is made by the pure module, so the policy
-                        # is the same one the settings tab reports. Only the cursor is recorded
-                        # here; nothing re-runs the request from inside the request path.
-                        if ex_settings.get('resumeOnCrash') and metadata.get('chat_id'):
-                            try:
-                                ex_attempt_streamed = len(output) > ex_attempt_output_start
-                                verdict = decide(
-                                    e,
-                                    attempt=tool_call_iterations,
-                                    max_retries=ex_settings.get('maxRetries', 3),
-                                    shape_retries=ex_settings.get('shapeRetries', 1),
-                                    base_backoff=ex_settings.get('backoffSeconds', 2.0),
-                                )
-                                write_checkpoint(
-                                    DATA_DIR,
-                                    {
-                                        'chat_id': metadata.get('chat_id'),
-                                        'cursor': tool_call_iterations,
-                                        'done': [item.get('id') for item in prior_output if item.get('id')],
-                                        'pending': [call.get('id') for call in tool_calls if call.get('id')],
-                                        'last_error': error_content,
-                                        'class': verdict.get('class'),
-                                        'retry_permitted': retry_permitted(verdict, partial_output=ex_attempt_streamed),
-                                    },
-                                )
-                                if event_emitter:
-                                    await event_emitter(
-                                        {
-                                            'type': 'status',
-                                            'data': {
-                                                'action': 'ex_recovery',
-                                                'description': f"{verdict.get('action')}: {verdict.get('reason')}",
-                                                'done': True,
-                                            },
-                                        }
-                                    )
-                            except Exception:
-                                log.exception('EX recovery checkpoint failed; the turn still ends normally')
-
+                    # Stop unless the ONLY reason we are here is a rejected name.
+                    if tool_calls or not ex_rejected_seen:
                         break
-
                 if (
                     max_tool_call_iterations is not None
                     and tool_calls

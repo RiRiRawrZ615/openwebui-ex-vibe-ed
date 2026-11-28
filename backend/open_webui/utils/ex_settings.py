@@ -145,6 +145,11 @@ DEFAULTS = {
     #
     # This is the fix for the failure mode that killed chats on both machines: a 157034 token
     # prompt against a 131072 window, refused mid-turn with no recovery.
+    # A tool call the engine refused because its name was never declared leaves the turn with no
+    # tool calls, which used to end it and print raw <tool_call> markup as prose. With this on, the
+    # fork appends one correction naming the declared spelling (or listing what IS declared when
+    # there is no honest match) and re-runs the step once. Off restores the old dead-turn behaviour.
+    "rejectedToolRetry": True,
     "evictEveryTurn": True,
     "evictExportChars": 20000,     # cap on the transcript block pasted back in
     "evictMessageChars": 2000,     # per message cap inside the transcript block
