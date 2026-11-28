@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.2.0-rc3]
+
+Every item below came from a run, not from reading the code.
+
+### Fixed
+
+- **Context death.** The gate counted tokens as `chars / 3.4`. Measured against the live engine on
+  2026-11-27, that was 1.49x high on prose and **1.26x LOW on tool JSON**, and agentic coding is
+  almost entirely tool JSON. One request measured 103,372 here and reached the engine as 157,034,
+  which the engine refused with no recovery. Counting now uses the model's own vocabulary
+  (`vocab.json` + `merges.txt` beside the pack) and measures 0.878 to 1.000 against the engine,
+  always on the safe side. On a 128k box this is the difference between a live chat and a dead one.
+- **The no-handshake fallback was 262144.** `detect_ceiling` fell back to the 256k constant when the
+  launcher handshake was missing or stale, so the 128k machine believed it had twice the window it
+  had. That is exactly how a 157,034 token prompt was allowed to be sent there. The fallback is now
+  32768, because a missing handshake is unknown, not large.
+- **Calibration double-corrected.** `read_calibration` returned a stored engine/gate ratio whose only
+  purpose was to correct the old character estimate. Once counting became exact that ratio inflated
+  the count by its mean of 1.18 and up to the 1.6 ceiling, making the gate evict and refuse early.
+  19 of 36 stored ratios were affected. It returns 1.0 while exact counting is on;
+  `EX_CALIBRATION_LEGACY=1` restores the old behaviour.
+- **The transcript handoff was a dead end.** It gave a file path but never said how to read it. The
+  block now names `read_cache` and shows the call shape, since that tool already accepts a local
+  file path as `ref`. A pointer with no reader is not recoverable.
+
+### Added
+
+- **Per-turn eviction.** The transcript leaves the prompt every turn rather than when a threshold is
+  crossed, is appended verbatim to a plain text transcript on disk, and is pasted back as one capped
+  system block plus the last reasoning turn. A threshold policy keeps the whole transcript in the
+  prompt until it is nearly the size of the window, so the prompt always converges on the window and
+  the window is what ends the chat. This keeps the prompt bounded, which makes the real window a
+  safety net instead of the failure point.
+- Old tool exchanges inside a single turn are evicted too, past `keepToolTurns`. Sixty tool calls
+  inside one user turn measured 92,213 tokens, and nothing else would ever have touched them.
+- Stateless requests, which have no chat id, are evicted as well, rendering the export from the
+  removed messages instead of inventing a chat id that would merge unrelated conversations.
+- `backend/ex_perturn_selftest.py`: 16 assertions, no pytest and no network. It covers the
+  eviction, the dedupe, the export cap, a failing data dir, and 150 turns staying small.
+
+### Verified
+
+- 182 messages / 152,560 naive tokens in, engine billed **8,721** on the 256k machine and **3,364**
+  on the 128k machine, both answering correctly.
+- Gate log for the same request: `measured 121642 -> 13228, shed passes 0, refused=False`.
+- 300 turns compress to 6,065 tokens. A single turn with 60 tool calls goes 92,213 to 14,112.
+- Both machines: web UI, engine and terminal all answering 200, selftest passing.
+
+### Known
+
+- The handoff block changes every turn, so the KV prefix cache past the system prompt is not reused.
+  Full prefill is paid per turn instead of cache hits. This is the deliberate trade, and
+  `evictEveryTurn: False` reverts to the threshold behaviour.
+- The packaged tree on a second machine is root-owned, so a package upgrade overwrites these files.
+  Run `backend/ex_perturn_selftest.py` after any upgrade to confirm.
+
 ## [1.2.0-rc4] - 2026-11-26
 
 Three files the previous session left sitting in the tree, each one a defect with a symptom
