@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
+## [1.2.0-rc6] - 2026-11-28
+
+Context is now billion-context's job. The fork's own per-turn eviction is retired, not tuned.
+
+### Added
+
+- **bili as the context system.** The launcher starts billion-context on 8787 and points the fork's
+  provider at it through the `/bili/` prefix. Compression is model-driven and **reversible**: the
+  model calls `compress` itself, `decompress` restores a folded range when the exact text matters,
+  and `search_context` covers the rest. That is the difference that matters, because the thing it
+  replaced could only ever lose detail.
+- **`ensure-bili.sh`**, called from `%post` on the same non-fatal pattern as `ensure-open-terminal`.
+  npm's global prefix is per-user, so a root install lands where the launcher never looks; the
+  script detects against the binary answering `--version` and defers the install to first user
+  start.
+- **A tool-result cap** before a result enters the prompt (`ex_toolcap.py`): head and tail kept, the
+  cut declared inline with the original size and a spill path, and the whole body written to disk.
+  Measured on a 1,043,301-character result: 43.5x smaller, spill file byte-identical to the original.
+- **`compactionMode`** (`full | tools | off`) so the tool cap and transcript compaction are
+  separable.
+- **`STRATA_HIP_PROMPT_F16=1`** exported by default for the RDNA2 prompt path, with `=0` as the
+  escape hatch.
+
+### Fixed
+
+- **A provider injection that bypassed the proxy.** `ensure_strata_connection()` force-injects
+  `STRATA_BASE_URL` at index 0 on every config read, and that value defaulted to the bare engine, so
+  bili was bypassed no matter what the launcher exported or the database stored. Measured: a live
+  request billed 11,829 tokens while bili's forward counter never moved. It now falls back to
+  `OPENAI_API_BASE_URL` before the engine, and the launcher exports `OWV_STRATA_BASE_URL` explicitly.
+- **Journal ids are counted from every header.** `entry_ids_by_message()` only sees entries that
+  carry a `message_id`, so a batch could number itself below the real maximum and reuse ids already
+  on disk. Measured before: 456 headers, 370 unique ids. `read_journal` also says so when an id is
+  duplicated instead of returning the first match blind.
+- **Index lines are honest.** The per-turn handoff is a bounded index of real journal entries rather
+  than a transcript paste. Scratch reasoning is skipped, republished pointers are skipped, and drops
+  are declared rather than silent.
+
+### Changed
+
+- `compactionMode` defaults to `tools`. The tool cap is on; transcript compaction is off, because
+  bili owns context now.
+- The `%description` describes what the package does today instead of describing the eviction that
+  this release removes.
+
 ## [1.2.0-rc5] - 2026-11-27
 
 Every item below came from a run, not from reading the code.

@@ -185,6 +185,47 @@ WEBUI_AUTH="${WEBUI_AUTH:-False}"
 WEBUI_SECRET_KEY="${WEBUI_SECRET_KEY:-fixed_secret_llamacpp_safe_v4}"
 OPENAI_API_BASE_URL="${OPENAI_API_BASE_URL:-http://127.0.0.1:${API_PORT}/v1}"
 
+# >>> owv bili >>>
+# billion-context is the context system: a proxy that sits in front of the engine and rewrites
+# the conversation as it grows, model-driven and reversible. It replaces the fork's own per-turn
+# eviction, which flattened the transcript into a lossy paste every turn.
+#
+# Backend-agnostic: it fronts whatever is on API_PORT, so it works for strata and llama.cpp.
+OWV_BILI_ENABLED="${OWV_BILI_ENABLED:-1}"
+OWV_BILI_PORT="${OWV_BILI_PORT:-8787}"
+OWV_BILI_BIN="${OWV_BILI_BIN:-$HOME/.local/bin/bili}"
+
+# A proxy that is down is worse than no proxy, so the URL only changes when bili answers. If it
+# cannot start, the fork talks to the engine directly and the session still works.
+owv_bili_start() {
+    [[ "$OWV_BILI_ENABLED" == "1" ]] || { log "bili disabled (OWV_BILI_ENABLED=0)"; return 0; }
+    [[ -x "$OWV_BILI_BIN" ]] || { warn "bili not found at $OWV_BILI_BIN; context compression is OFF"; return 0; }
+    if curl -sf --max-time 2 "http://127.0.0.1:$OWV_BILI_PORT/__bili/health" >/dev/null 2>&1; then
+        log "bili already healthy on $OWV_BILI_PORT"
+        return 0
+    fi
+    log "starting bili on $OWV_BILI_PORT"
+    setsid nohup "$OWV_BILI_BIN" start --port "$OWV_BILI_PORT" \
+        >> "$LOG_DIR/bili.log" 2>&1 < /dev/null &
+    local i=0
+    while (( i < 40 )); do
+        if curl -sf --max-time 1 "http://127.0.0.1:$OWV_BILI_PORT/__bili/health" >/dev/null 2>&1; then
+            log "bili healthy"
+            return 0
+        fi
+        sleep 0.5; (( i++ ))
+    done
+    warn "bili did not become healthy in 20s; context compression is OFF for this run"
+    return 0
+}
+
+# The prefix form, not cert-MITM: the upstream is loopback plain HTTP, so bili never decrypts.
+# This is the shape the project documents for a local gateway.
+owv_bili_url() {
+    printf 'http://127.0.0.1:%s/bili/http://127.0.0.1:%s/v1' "$OWV_BILI_PORT" "$API_PORT"
+}
+# <<< owv bili <<<
+
 # Offline-first. A cached copy is used whenever it exists; the network is only consulted when
 # there is no local copy at all. This is the fix for the outage failure.
 OWV_ALLOW_NETWORK="${OWV_ALLOW_NETWORK:-0}"
@@ -214,6 +255,22 @@ fi
 mkdir -p "$DATA_DIR" "$RUNTIME_DIR" "$LOG_DIR"
 
 # Persistent config beats the environment. Open WebUI seeds the config table from
+# Start bili first, then aim both the server and the connection repair at it. Order matters:
+# the repair below writes OPENAI_API_BASE_URLS into the database, so it must see the final URL.
+# Setting only OPENAI_API_BASE_URL is not enough: the fork's openai router force-injects
+# STRATA_BASE_URL at index 0 on every config read, and that value decides whether the proxy is
+# used or silently bypassed.
+owv_bili_start || true
+if curl -sf --max-time 2 "http://127.0.0.1:$OWV_BILI_PORT/__bili/health" >/dev/null 2>&1; then
+    OPENAI_API_BASE_URL="$(owv_bili_url)"
+    OWV_STRATA_BASE_URL="$OPENAI_API_BASE_URL"
+    OWV_STRATA_URL="$OPENAI_API_BASE_URL"
+    export OWV_STRATA_BASE_URL OWV_STRATA_URL
+    log "context: bili in front of the engine ($OPENAI_API_BASE_URL)"
+else
+    log "context: talking to the engine directly"
+fi
+
 # OPENAI_API_BASE_URLS once and then reads the database on every request, so exporting the strata
 # url here does nothing while a stored row still points at an engine that is not running. That is
 # the shape of the failure: the only provider that appears alive is the remote one, because every
@@ -699,6 +756,13 @@ else
             # binary, with the config's own env and library paths. One process group, stoppable.
             ( cd "$STRATA_DIR"
               export STRATA_ROCBLAS_TUNING="${STRATA_ROCBLAS_TUNING:-$STRATA_DIR/tools/hip}"
+              # RDNA2 prompt path. The engine's own log said it: a long prompt reads about 2x
+              # faster here with FP16 prompt GEMMs, because rocBLAS is tuned only for FP16 on
+              # gfx103x. The tuning table above only covers FP16-out GEMMs, so this flag and
+              # that table are the same lever: without the flag the table has nothing to tune.
+              # Measured on a 6950 XT: 28942-token cold prefill went 56862ms -> 26153ms.
+              # STRATA_HIP_PROMPT_F16=0 falls back to FP32 if a numerics problem is suspected.
+              export STRATA_HIP_PROMPT_F16="${STRATA_HIP_PROMPT_F16:-1}"
               export LD_LIBRARY_PATH="$STRATA_DIR/.venv/lib/python3.11/site-packages/_rocm_sdk_devel/lib:$STRATA_DIR/.venv/lib/python3.11/site-packages/_rocm_sdk_libraries_gfx103X_all/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               exec "$STRATA_VENV_PY" "$STRATA_SERVER" --engine strata --config "$STRATA_CONFIG" --port "$API_PORT"
             ) 2>&1 | tee -a "$BACKEND_LOG" "$STOCK_ENGINE_LOG" &

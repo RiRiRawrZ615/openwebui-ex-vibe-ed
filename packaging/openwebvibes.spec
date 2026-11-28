@@ -1,6 +1,6 @@
 Name:           openwebvibes
 Version:        %{?_version}%{!?_version:1.2.0}
-Release:        %{?_release}%{!?_release:1.rc1}
+Release:        %{?_release}%{!?_release:6}
 Summary:        Open Web Vibes: the Open WebUI fork with the context gate
 License:        MIT
 Source0:        openwebvibes.tar.gz
@@ -14,14 +14,22 @@ Requires:       curl
 %description
 Replaces stock Open WebUI with the fork. One product, one port, one data dir.
 
-The packaged build carries the request-shaping gate (ex_wiring.prompt_gate): the prompt is measured
-after tool results are materialized, stale tool output is trimmed, and when the honest count crosses
-the rollover point the oldest sections are evicted. The verbatim dump is written before anything
-leaves the prompt, the evicted span is handed to the vector store, and what comes back into the
-prompt is an addressable index plus the last reasoning turn. The output cap is fitted to the room the
-prompt leaves, so a request that would be refused by the engine is refused locally with a readable
-reason instead. The window is the smaller of the configured value and the engine handshake, so a
-128k machine cannot plan for 262144.
+Context is handled by billion-context (bili), a proxy the launcher starts in front of the engine.
+It compresses the conversation as it grows, and it does so model-driven, incrementally and
+reversibly: the model calls compress itself when it judges the time is right, folded ranges can be
+decompressed back when the exact text matters, and search_context covers the rest. That replaces
+the fork's earlier per-turn eviction, which flattened the transcript into a lossy paste and
+re-summarised it every turn, so detail was lost and the prompt was paid for twice.
+
+The launcher also carries the request-shaping gate (ex_wiring.prompt_gate): the prompt is measured
+after tool results are materialized, oversized tool results are capped and spilled to disk with the
+cut declared inline, and the window is the smaller of the configured value and the engine
+handshake, so a 128k machine cannot plan for 262144. If bili is unavailable the launcher still
+starts and the fork talks to the engine directly, without compression.
+
+bili is detected at install time and reported. It is installed from npm into the user prefix on
+first start, because npm's global prefix is per-user and a root install would land where the
+launcher never looks.
 
 %prep
 %setup -q -n openwebvibes
@@ -53,6 +61,7 @@ install -m 755 packaging/launcher/owv-status.sh "%{buildroot}/usr/lib/openwebvib
 install -m 755 packaging/install-detect.sh "%{buildroot}/usr/lib/openwebvibes/install-detect.sh"
 install -m 755 packaging/ensure-open-terminal.sh "%{buildroot}/usr/lib/openwebvibes/ensure-open-terminal.sh"
 install -m 755 packaging/ensure-venv.sh "%{buildroot}/usr/lib/openwebvibes/ensure-venv.sh"
+install -m 755 packaging/ensure-bili.sh "%{buildroot}/usr/lib/openwebvibes/ensure-bili.sh"
 ln -s ../lib/openwebvibes/launcher/owv-packaged.sh "%{buildroot}/usr/bin/owv"
 
 install -m 644 packaging/etc/openwebvibes/owv.conf "%{buildroot}/etc/openwebvibes/owv.conf"
@@ -80,6 +89,14 @@ install -d -m 755 /var/lib/openwebvibes 2>/dev/null || true
 if [ "${OWV_RPM_BOOTSTRAP_VENV:-1}" = "1" ]; then
     /usr/lib/openwebvibes/ensure-venv.sh > /var/lib/openwebvibes/venv-report.json 2>/dev/null || true
 fi
+
+# bili (billion-context) is the context system now, not an extra: the launcher starts it and aims
+# the fork's provider at it. Without it the launcher still works but the fork falls back to talking
+# to the engine directly, so a fresh install would silently lose context compression, which is the
+# whole point of this fork. Same shape as the Open Terminal step above: an npm-based tool is not a
+# package dependency (that would block api-only installs on a box with no node), so detect, report,
+# and let the launcher's first user start complete it with the right prefix. Non-fatal on purpose.
+/usr/lib/openwebvibes/ensure-bili.sh > /var/lib/openwebvibes/bili-report.json 2>/dev/null || true
 
 %files
 /usr/lib/openwebvibes
