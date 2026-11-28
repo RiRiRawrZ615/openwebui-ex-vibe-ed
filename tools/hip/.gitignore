@@ -1,0 +1,8 @@
+rpmbuild/
+BUILD/
+BUILDROOT/
+RPMS/
+SOURCES/
+SPECS/
+SRPMS/
+tune_rocblas
