@@ -513,3 +513,77 @@ def pairing_safe_insert_index(messages: list[dict]) -> int:
     while i < len(messages) and messages[i].get("role") == "tool":
         i += 1
     return i
+
+
+# ---------------------------------------------------------------------------------------------
+# Runaway stop
+# ---------------------------------------------------------------------------------------------
+# A turn that re-derives the same plan is not making progress, and it used to be allowed to do
+# that until the process died. Measured on one overnight run: 493,521 output tokens across 507
+# reasoning blocks, each one re-reading the same transcript and restating the same next step.
+# The context gate cannot catch this because the prompt stays small; the cost is all output.
+#
+# Two independent stops, because either one alone has a blind spot:
+#   - a token budget, which catches steady drift that never repeats exactly
+#   - a repetition count on reasoning openings, which catches the loop early and cheaply
+DEFAULT_MAX_OUTPUT_TOKENS = 120000
+DEFAULT_REASONING_REPEATS = 3
+_REASONING_OPEN = 120
+
+
+def _opening(text: str) -> str:
+    """A cheap fingerprint of one reasoning block: its first non-empty line, normalised."""
+    for line in (text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[: _REASONING_OPEN].lower()
+    return ""
+
+
+def runaway_stop(
+    output_tokens: int = 0,
+    reasoning_blocks: list | None = None,
+    settings: dict | None = None,
+) -> dict:
+    """Whether this turn must stop. Never raises: a guard that can throw is worse than none."""
+    settings = settings or {}
+    try:
+        budget = int(settings.get("maxOutputTokens") or DEFAULT_MAX_OUTPUT_TOKENS)
+    except (TypeError, ValueError):
+        budget = DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        repeats = int(settings.get("reasoningRepeats") or DEFAULT_REASONING_REPEATS)
+    except (TypeError, ValueError):
+        repeats = DEFAULT_REASONING_REPEATS
+
+    spent = 0
+    try:
+        spent = int(output_tokens or 0)
+    except (TypeError, ValueError):
+        spent = 0
+
+    if budget > 0 and spent > budget:
+        return {
+            "stop": True,
+            "reason": "output budget exhausted",
+            "detail": "this turn generated %d tokens, over the %d budget" % (spent, budget),
+            "output_tokens": spent,
+            "budget": budget,
+        }
+
+    counts: dict[str, int] = {}
+    for block in reasoning_blocks or []:
+        key = _opening(block if isinstance(block, str) else str(block or ""))
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        if repeats > 0 and counts[key] >= repeats:
+            return {
+                "stop": True,
+                "reason": "reasoning is repeating",
+                "detail": "the same opening came back %d times: %r" % (counts[key], key[:100]),
+                "output_tokens": spent,
+                "budget": budget,
+            }
+
+    return {"stop": False, "reason": "", "detail": "", "output_tokens": spent, "budget": budget}

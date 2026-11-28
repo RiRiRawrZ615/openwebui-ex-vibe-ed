@@ -104,7 +104,7 @@ from open_webui.utils.ex_settings import resolve_ex_settings
 from open_webui.utils import ex_rejected
 from open_webui.models.tools import Tools as ToolStore
 from open_webui.utils.ex_trim import gate_features
-from open_webui.utils.ex_loop_guard import refused_call_note, would_repeat
+from open_webui.utils.ex_loop_guard import refused_call_note, runaway_stop, would_repeat
 from open_webui.utils.ex_wiring import (
     drain_steering,
     index_chat_memory,
@@ -5916,6 +5916,10 @@ async def streaming_chat_response_handler(response, ctx):
                 ex_settings = resolve_ex_settings(user, form_data)
 
                 tool_call_iterations = 0
+                # Runaway accounting for this turn. Reset here so a second turn in the same
+                # request cannot inherit the previous one's spend.
+                ex_runaway_tokens = 0
+                ex_runaway_reasoning = []
                 max_tool_call_iterations = getattr(
                     request.state,
                     'max_tool_call_iterations',
@@ -6061,6 +6065,43 @@ async def streaming_chat_response_handler(response, ctx):
                         max_tool_call_iterations is None or tool_call_iterations < max_tool_call_iterations
                     ):
                         tool_call_iterations += 1
+
+                        # EX runaway stop. The failure this exists for cost 493,521 output tokens in
+                        # one turn: the prompt stayed small so the context gate had nothing to say,
+                        # and the model re-derived the same plan until the process died. The gate
+                        # bounds input; nothing bounded output. This does, and it runs before the
+                        # loop guard so it fires even when loopGuard is off.
+                        try:
+                            ex_runaway = runaway_stop(
+                                output_tokens=ex_runaway_tokens,
+                                reasoning_blocks=ex_runaway_reasoning,
+                                settings=ex_settings,
+                            )
+                            if ex_runaway.get("stop"):
+                                log.warning(
+                                    "EX runaway stop after %d iterations: %s (%s)",
+                                    tool_call_iterations, ex_runaway.get("reason"), ex_runaway.get("detail"),
+                                )
+                                if event_emitter:
+                                    await event_emitter(
+                                        {
+                                            "type": "status",
+                                            "data": {
+                                                "action": "ex_runaway_stop",
+                                                "description": "stopped this turn: " + str(ex_runaway.get("detail") or ex_runaway.get("reason")),
+                                                "done": True,
+                                            },
+                                        }
+                                    )
+                                error_content = (
+                                    "Stopped this turn to prevent a runaway: "
+                                    + str(ex_runaway.get("detail") or ex_runaway.get("reason"))
+                                )
+                                await emit_message_error(error_content)
+                                tool_calls = []
+                                break
+                        except Exception:
+                            log.exception("EX runaway guard failed; the turn continues")
 
                         # EX loop guard. Detection at the iteration boundary, not after the loop
                         # already happened. Mid-reasoning injection is impossible, so the honest
@@ -6803,6 +6844,29 @@ async def streaming_chat_response_handler(response, ctx):
                                     # two here, for the request that actually went out, and the next
                                     # measurement uses the ratio.
                                     ex_usage = current_usage if isinstance(current_usage, dict) else {}
+
+                                    # Feed the runaway guard. Without this the budget stop can
+                                    # never fire, because nothing ever adds to the total. Both
+                                    # counters are additive across the turn on purpose: the
+                                    # failure being guarded against is cumulative spend, not one
+                                    # large iteration.
+                                    try:
+                                        _ex_out = (
+                                            ex_usage.get('completion_tokens')
+                                            or ex_usage.get('output_tokens')
+                                            or 0
+                                        )
+                                        ex_runaway_tokens += int(_ex_out or 0)
+                                        for _ex_item in (output or []):
+                                            if isinstance(_ex_item, dict) and _ex_item.get('type') == 'reasoning':
+                                                _ex_body = ''
+                                                for _ex_part in (_ex_item.get('content') or []):
+                                                    if isinstance(_ex_part, dict):
+                                                        _ex_body += str(_ex_part.get('text') or '')
+                                                if _ex_body.strip():
+                                                    ex_runaway_reasoning.append(_ex_body)
+                                    except Exception:
+                                        log.exception('EX runaway accounting failed; the guard sees less but the turn continues')
                                     ex_record = record_engine_count(
                                         DATA_DIR,
                                         metadata.get('chat_id', ''),
