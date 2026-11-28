@@ -105,6 +105,7 @@ from open_webui.utils import ex_rejected
 from open_webui.models.tools import Tools as ToolStore
 from open_webui.utils.ex_trim import gate_features
 from open_webui.utils.ex_loop_guard import refused_call_note, runaway_stop, would_repeat
+from open_webui.utils.ex_toolcap import cap_tool_output, remaining_context_note
 from open_webui.utils.ex_wiring import (
     drain_steering,
     index_chat_memory,
@@ -6449,7 +6450,31 @@ async def streaming_chat_response_handler(response, ctx):
 
                         result_status_by_call_id = {}
                         for result in results:
-                            output_parts = [{'type': 'input_text', 'text': result.get('content', '')}]
+                            # Cap a fresh result BEFORE it enters the prompt. A single huge tool
+                            # result is the one thing that can kill a long chat outright, and capping
+                            # it only after it is old, which is what the journal did, is too late: the
+                            # bomb has already been paid for once.
+                            _ex_raw = result.get('content', '') or ''
+                            _ex_cap_mode = str(ex_settings.get('compactionMode') or 'full').lower()
+                            _ex_capped = {'text': _ex_raw, 'capped': False, 'path': '', 'total': len(_ex_raw), 'kept': len(_ex_raw)}
+                            if _ex_cap_mode != 'off':
+                                try:
+                                    _ex_capped = cap_tool_output(
+                                        _ex_raw,
+                                        data_dir=DATA_DIR,
+                                        call_id=str(result.get('tool_call_id') or ''),
+                                        tool_name=str(tool_function_name or ''),
+                                        settings=ex_settings,
+                                    )
+                                    if _ex_capped.get('capped'):
+                                        log.info(
+                                            'EX tool cap %s: %d -> %d chars (mode %s)',
+                                            tool_function_name, _ex_capped.get('total'),
+                                            _ex_capped.get('kept'), _ex_capped.get('mode'),
+                                        )
+                                except Exception:
+                                    log.exception('EX tool cap failed; the raw result is kept')
+                            output_parts = [{'type': 'input_text', 'text': _ex_capped.get('text', _ex_raw)}]
                             local_output_status = (
                                 'failed' if _is_tool_result_error(result.get('content', '')) else 'completed'
                             )

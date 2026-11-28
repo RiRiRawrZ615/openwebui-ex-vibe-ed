@@ -29,6 +29,7 @@ from open_webui.utils.ex_journal import (
     journal_path,
     partition,
     read_journal,
+    max_entry_id,
 )
 from open_webui.utils.ex_loop_guard import pairing_safe_insert_index, scan, steering_note, text_tool_markup_issues
 import asyncio
@@ -329,7 +330,10 @@ def journal_window(
     """Apply the window and append only the new entries. Returns (model_messages, new_count)."""
     path = journal_path(data_dir, chat_id)
     lookup = entry_ids_by_message(path)
-    base_entry_id = max((e["id"] for entries in lookup.values() for e in entries), default=0)
+    # Count from every header, not from the message-keyed lookup. The lookup skips any entry
+    # written without a message_id, which let the counter restart below the real maximum and
+    # reuse ids already on disk. Measured before this: 456 headers, 370 unique ids.
+    base_entry_id = max_entry_id(path)
 
     model_messages, entries = partition(
         messages,
@@ -579,7 +583,11 @@ def prompt_gate(
     # A stateless call has no chat id, because the client resends the whole history itself. It still
     # grows without bound and still hits the window, so it is evicted too, rendered from the removed
     # messages rather than from a transcript file.
-    if settings.get("evictEveryTurn") and (chat_id or settings.get("evictStateless", True)):
+    # The mode switch gates per-turn compaction only. "tools" is a real mode: it caps bombs
+    # without touching the transcript, because a long chat and a single huge result are
+    # different failures and someone may want one without the other.
+    compaction_mode = str(settings.get("compactionMode") or "full").lower()
+    if compaction_mode == "full" and settings.get("evictEveryTurn") and (chat_id or settings.get("evictStateless", True)):
         try:
             messages, per_turn_report = per_turn_evict(
                 messages,

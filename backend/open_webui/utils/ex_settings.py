@@ -150,6 +150,15 @@ DEFAULTS = {
     # fork appends one correction naming the declared spelling (or listing what IS declared when
     # there is no honest match) and re-runs the step once. Off restores the old dead-turn behaviour.
     "rejectedToolRetry": True,
+    # The one switch the UI exposes. "full" is per-turn compaction, "tools" caps oversized
+    # tool results and leaves the transcript alone, "off" does neither. Two separate
+    # mechanisms because they solve different failures: a context bomb is one huge result,
+    # while a long chat is many ordinary ones.
+    "compactionMode": "full",      # full | tools | off
+    "toolCapMode": "cap",          # cap | drop | off, applied when compactionMode is not off
+    "toolCapChars": 24000,         # ceiling for one tool result
+    "toolCapHeadShare": 0.55,      # of the ceiling, the share kept from the head
+    "contextBudgetNote": True,     # tell the model how much room is left
     "evictEveryTurn": True,
     "evictExportChars": 20000,     # cap on the transcript block pasted back in
     "evictMessageChars": 2000,     # per message cap inside the transcript block
