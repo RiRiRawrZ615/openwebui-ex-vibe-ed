@@ -246,7 +246,18 @@ async def get_openai_config() -> dict:
 # can never make the UI list strata; this is the only place that can. Pure read, nothing
 # written to the database. Idempotent, and index alignment is preserved because the
 # api_configs keys are strings of the list index, so inserting at 0 shifts them.
-STRATA_BASE_URL = os.getenv('OWV_STRATA_BASE_URL', 'http://127.0.0.1:8004/v1')
+# The provider this module force-injects at index 0 on every config read. If that value is the
+# bare engine, bili is bypassed no matter what the launcher exports or the database stores:
+# measured, a live request billed 7818 tokens while bili's forward counter never moved.
+#
+# So the default chain ends at OPENAI_API_BASE_URL before it ends at the engine. The launcher
+# exports both, and OPENAI_API_BASE_URL is already the /bili/ url when bili is healthy, which
+# makes a forgotten OWV_STRATA_BASE_URL harmless instead of silent.
+STRATA_BASE_URL = (
+    os.getenv('OWV_STRATA_BASE_URL')
+    or os.getenv('OPENAI_API_BASE_URL')
+    or 'http://127.0.0.1:8004/v1'
+)
 STRATA_MODEL_ID = os.getenv('OWV_STRATA_MODEL_ID', 'qwen3.8-flash-next-iq2_xs')
 OWV_ONLY_STRATA = os.getenv('OWV_ONLY_STRATA', '0') == '1'
 
