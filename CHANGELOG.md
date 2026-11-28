@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
-## [1.2.0-rc3]
+## [1.2.0-rc5]
 
 Every item below came from a run, not from reading the code.
 
