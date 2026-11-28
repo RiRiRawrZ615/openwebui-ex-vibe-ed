@@ -320,6 +320,196 @@ def handoff_block(data_dir: Any, chat_id: str, settings: dict, reasoning: str = 
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------------------------
+# Bounded brief: an index of real journal entries instead of a verbatim transcript paste
+# ---------------------------------------------------------------------------------------------
+# The verbatim paste could not work, and the reason is structural. A message clipped at N chars is
+# indistinguishable from a complete message, so the model reasons from a body whose tail is missing
+# and nothing warns it. A flattened transcript also puts abandoned drafts and real instructions in
+# one stream, so the model's own speculation reads as established fact. And the block is capped
+# smaller than the history, so it omits more the longer the chat gets while still costing thousands
+# of tokens every turn.
+#
+# The journal already stores a summary and a real id per entry, so the index below costs one file
+# read. Nothing here calls a model.
+BRIEF_MARKER = "[context brief]"
+# A hard ceiling on the whole block. A line count does not bound it, because line length and
+# header size both vary. This is what makes the per-turn cost predictable.
+BRIEF_MAX_CHARS = 4000
+BRIEF_MAX_LINES = 120
+BRIEF_LINE_CHARS = 110
+ENTRY_HEAD = re.compile(r"^## entry (\d+) \| turn (\d+) \| ([a-z_]+)")
+ENTRY_SUMMARY = re.compile(r"^summary: (.*)$")
+
+BRIEF_READERS = (
+    "There are two ways to read what is behind this index, and both are real:",
+    '  ex_journal__read(entry=123)                          one step in full, by its id',
+    '  read_cache(ref="<transcript path>", needle="text")   keyword search across everything',
+    "Use the exact call shape above. Do not write a different tool name, and do not cite an id",
+    "that is not in this index. If a detail matters to the work, read it rather than guessing at",
+    "it; if it does not, leave it alone. Do not restate this index back to the user.",
+)
+
+
+def read_journal_entries(data_dir: Any, chat_id: str) -> list[dict]:
+    """Every journal entry as (id, turn, kind, summary). A file read, not a model call."""
+    path = Path(str(data_dir)) / "ex_journals" / (re.sub(r"[^A-Za-z0-9_.-]", "_", str(chat_id or "unknown")) + ".md")
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    entries: list[dict] = []
+    current = None
+    for line in raw.splitlines():
+        head = ENTRY_HEAD.match(line)
+        if head:
+            if current:
+                entries.append(current)
+            current = {
+                "id": int(head.group(1)),
+                "turn": int(head.group(2)),
+                "kind": head.group(3),
+                "summary": "",
+            }
+            continue
+        if current is not None:
+            want = ENTRY_SUMMARY.match(line)
+            if want:
+                current["summary"] = want.group(1).strip()
+                continue
+            # The journal's summary is the first line clipped to 120 chars, which for a tool output
+            # is frequently a wrapper header or a lone brace. When it says nothing, keep collecting
+            # body text so the index line can be built from real content instead.
+            if len(current.get("summary") or "") < 24 and not line.startswith(("ts:", "message_id:", "call_id:", "#")):
+                spare = " ".join(line.split())
+                if spare:
+                    current["body"] = (current.get("body") or "") + " " + spare
+    if current:
+        entries.append(current)
+    return entries
+
+
+def brief_block(data_dir: Any, chat_id: str, settings: dict | None = None, reasoning: str = "",
+                removed: list[dict] | None = None) -> str:
+    """The block that replaces the evicted turns. Bounded, and every pointer in it resolves."""
+    settings = settings or {}
+    try:
+        max_lines = int(settings.get("briefMaxLines") or BRIEF_MAX_LINES)
+    except (TypeError, ValueError):
+        max_lines = BRIEF_MAX_LINES
+    try:
+        line_chars = int(settings.get("briefLineChars") or BRIEF_LINE_CHARS)
+    except (TypeError, ValueError):
+        line_chars = BRIEF_LINE_CHARS
+
+    entries = read_journal_entries(data_dir, chat_id)
+    # Older journals reuse ids, so keep the last entry per id. A brief must never point at an
+    # id that resolves to a different step.
+    by_id: dict[int, dict] = {}
+    for entry in entries:
+        by_id[entry["id"]] = entry
+    entries = [by_id[key] for key in sorted(by_id)]
+    lines: list[str] = []
+    last_summary: list[str] = [""]
+    last_run: list[int] = [0]
+    last_first_id: list[int] = [0]
+    last_first_turn: list[int] = [0]
+    for entry in entries:
+        summary = " ".join((entry["summary"] or "").split())
+        # A summary of "{" or a wrapper header is not an index entry. Fall back to collected body.
+        if len(summary) < 24:
+            spare = " ".join((entry.get("body") or "").split())
+            if len(spare) > len(summary):
+                summary = spare
+        if len(summary) < 3:
+            summary = "(" + entry["kind"] + ", no text recorded)"
+        if len(summary) > line_chars:
+            summary = summary[:line_chars].rstrip() + "..."
+        label = summary
+        if lines:
+            # Collapse a run of identical summaries. The journal summary is the body's first line,
+            # and tool outputs often open with the same wrapper, so without this the index burns
+            # hundreds of lines repeating one string. Every id stays named, so nothing is hidden.
+            prev = last_summary[0]
+            if summary == prev:
+                run = last_run[0] + 1
+                last_run[0] = run
+                lines[-1] = "[e%d-e%d] turns %d-%d %s (%d identical steps): %s" % (
+                    last_first_id[0], entry["id"], last_first_turn[0], entry["turn"],
+                    entry["kind"], run, summary)
+                continue
+        last_summary[0] = summary
+        last_run[0] = 1
+        last_first_id[0] = entry["id"]
+        last_first_turn[0] = entry["turn"]
+        lines.append("[e%d] turn %d %s: %s" % (entry["id"], entry["turn"], entry["kind"], label))
+
+    # A stateless call has no chat to journal, so the index cannot exist. Fall back to a short
+    # deterministic rendering of what is being removed, which is honest about being abridged.
+    if not lines and removed:
+        for message in removed:
+            body = " ".join(_text(message).split())
+            if not body:
+                continue
+            if message.get("type") == "reasoning":
+                continue
+            lines.append("- %s: %s" % (message.get("role") or "message", body[:line_chars]))
+
+    dropped = 0
+    if max_lines > 0 and len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = lines[-max_lines:]
+
+    # Bound the block in characters, which a line count cannot do. Trim the OLD end: the recent
+    # steps are the ones needed to continue the work.
+    try:
+        max_chars = int(settings.get("briefMaxChars") or BRIEF_MAX_CHARS)
+    except (TypeError, ValueError):
+        max_chars = BRIEF_MAX_CHARS
+    if max_chars > 0 and lines:
+        head_room = max(600, max_chars - 900)
+        while lines and sum(len(x) + 1 for x in lines) > head_room:
+            lines.pop(0)
+            dropped += 1
+
+    head = [
+        BRIEF_MARKER,
+        "This chat is longer than the context window. Everything before the current work has been",
+        "replaced by the index below: one line per step, oldest first, with the id needed to read",
+        "the step in full. The full text is on disk and was not discarded.",
+        "",
+    ]
+    head.extend(BRIEF_READERS)
+    if dropped:
+        head.append(
+            "The first %d step(s) are no longer listed. They are still on disk: search them with "
+            "read_cache and a needle, or read the journal file directly." % dropped
+        )
+    if not lines:
+        head.append("")
+        head.append("(nothing has been indexed yet for this chat)")
+    else:
+        head.append("")
+        head.append("Index:")
+        head.extend(lines)
+
+    if reasoning:
+        cap_r = int(settings.get("shedReasoningChars") or 2000)
+        head += [
+            "",
+            "Your own last reasoning, verbatim. This is scratch work, not a record of what is true:",
+            reasoning[:cap_r],
+        ]
+
+    if not str(chat_id or "").strip() and removed is None:
+        return chr(10).join(head)
+    try:
+        head += ["", "Full transcript file, for read_cache: " + str(transcript_path(data_dir, chat_id))]
+    except Exception:
+        pass
+    return chr(10).join(head)
+
+
 def per_turn_evict(
     messages: list[dict],
     settings: dict,
@@ -430,8 +620,11 @@ def per_turn_evict(
     # conservative upper bound here.
     local = dict(settings)
     local["_exportCapChars"] = max(400, int(evicted_tokens * 1.2))
-    block = {"role": "system", "content": handoff_block(data_dir, chat_id, local, reasoning,
-                                                       removed=between if stateless else None)}
+    # The brief, not the transcript paste. The paste was the design that could not work: a clipped
+    # message reads as a complete one, and a flattened transcript promotes the agent's own drafts to
+    # established fact. The index below is bounded and every pointer in it resolves.
+    block = {"role": "system", "content": brief_block(data_dir, chat_id, local, reasoning,
+                                                     removed=between if stateless else None)}
     shaped = head + [block] + tail
 
     if sum(message_tokens(m) for m in shaped) >= report["tokens_before"]:
@@ -454,6 +647,9 @@ def per_turn_evict(
 
 
 __all__ = [
+    "BRIEF_MARKER",
+    "brief_block",
+    "read_journal_entries",
     "MARKER",
     "append_transcript",
     "handoff_block",

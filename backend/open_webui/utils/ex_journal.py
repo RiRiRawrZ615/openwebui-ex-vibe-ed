@@ -373,10 +373,17 @@ def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str =
         return block[:room] + f"\n[clipped at {room} of {len(block)} chars]"
 
     if entry_id is not None:
-        for s in sections:
-            if s.startswith(f"## entry {entry_id} "):
-                return clip(s, budget)
-        return f"[entry {entry_id} not found in {p} ({len(sections)} entries)]"
+        hits = [s for s in sections if s.startswith(f"## entry {entry_id} ")]
+        if not hits:
+            return f"[entry {entry_id} not found in {p} ({len(sections)} entries)]"
+        if len(hits) > 1:
+            # Duplicate ids exist in older journals, so picking the first one blind can return
+            # the wrong body. Say so, and return the last, which is the most recently appended
+            # and therefore the complete one.
+            body = clip(hits[-1], budget)
+            return "[note: %d entries share id %d; showing the most recent]%s%s" % (
+                len(hits), entry_id, chr(10), body)
+        return clip(hits[0], budget)
 
     picked = sections[-limit:] if not needle else [s for s in sections if needle.lower() in s.lower()][:limit]
     if not picked:
@@ -395,6 +402,25 @@ def read_journal(path: Path | str, *, entry_id: int | None = None, needle: str =
     if skipped:
         out.append(f"[read budget {budget} chars reached; {skipped} of {len(picked)} entries not shown]")
     return "\n\n".join(out)
+
+
+def max_entry_id(path: Path | str) -> int:
+    """The largest id anywhere in the file, counting every header.
+
+    entry_ids_by_message() only sees entries that carry a message_id, so an entry written
+    without one made the next batch number itself below the real maximum and reuse ids that
+    were already on disk. Measured: 456 headers, 370 unique ids. This scan cannot miss an
+    entry, which is what the counter needs.
+    """
+    p = Path(path)
+    if not p.exists():
+        return 0
+    best = 0
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        head = re.match(r"^## entry (\d+) ", line)
+        if head:
+            best = max(best, int(head.group(1)))
+    return best
 
 
 def entry_ids_by_message(path: Path | str) -> dict[str, list[dict]]:

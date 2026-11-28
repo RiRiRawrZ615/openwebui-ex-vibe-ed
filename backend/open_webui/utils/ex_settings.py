@@ -154,7 +154,7 @@ DEFAULTS = {
     # tool results and leaves the transcript alone, "off" does neither. Two separate
     # mechanisms because they solve different failures: a context bomb is one huge result,
     # while a long chat is many ordinary ones.
-    "compactionMode": "full",      # full | tools | off
+    "compactionMode": "off",     # full | tools | off  (tools = cap only, no eviction)
     "toolCapMode": "cap",          # cap | drop | off, applied when compactionMode is not off
     "toolCapChars": 24000,         # ceiling for one tool result
     "toolCapHeadShare": 0.55,      # of the ceiling, the share kept from the head
