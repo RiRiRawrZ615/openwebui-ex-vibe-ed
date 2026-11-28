@@ -40,6 +40,15 @@ from open_webui.utils.ex_context_window import estimate_tokens, message_tokens
 log = logging.getLogger(__name__)
 
 MARKER = "[context transcript]"
+
+# The block must say HOW to get the part that was cut. A pointer with no reader is a dead end:
+# read_cache in the web_search tool accepts a local file path explicitly, so that is the reader
+# named here. Kept short because it is paid for on every single turn.
+READER_HINT = (
+    "The full transcript is a plain text file on disk. Read any part of it with the "
+    "read_cache tool by passing this path as ref (it accepts a local file), for example "
+    "read_cache(ref=\"<path>\", start_line=120, end_line=200)."
+)
 TRANSCRIPT_NAME = "transcript.txt"
 INDEX_NAME = "transcript_index.json"
 
@@ -269,8 +278,9 @@ def handoff_block(data_dir: Any, chat_id: str, settings: dict, reasoning: str = 
     lines = [
         MARKER,
         "This is the running transcript of this conversation, saved as plain text and pasted back.",
-        "Read it the way you would read a chat log: it is what happened, in order, and it is not",
+        "Read it the way you would read a chat log: it is what happened, in order. It is not",
         "something the user said just now. Continue the work from where it ends.",
+        READER_HINT,
         "",
         body or "(the transcript is empty)",
     ]
@@ -279,7 +289,7 @@ def handoff_block(data_dir: Any, chat_id: str, settings: dict, reasoning: str = 
         lines += ["", "Your own last reasoning, verbatim:", reasoning[:cap_r]]
     if removed is None:
         try:
-            lines += ["", "Full transcript file: " + str(transcript_path(data_dir, chat_id))]
+            lines += ["", "Transcript file: " + str(transcript_path(data_dir, chat_id))]
         except Exception:
             pass
     return "\n".join(lines)

@@ -293,8 +293,22 @@ def _calibration_path(data_dir: Path | str, chat_id: str) -> Path:
     return Path(str(data_dir)) / CALIBRATION_DIR / f"{chat_id}.json"
 
 
+# The ratio was collected while the gate estimated with chars/3.4, which is what it was correcting
+# for. exact_tokens replaced that estimate, so a stored ratio is now a correction for an error that
+# no longer exists, and applying it inflates the count. Measured live on 2026-11-27: 19 chats
+# carried ratios above 1.02, mean 1.18, one at the 1.6 ceiling, and the engine agreement once
+# counting became exact was 0.878-1.000. Keeping those ratios would evict roughly a fifth of the
+# window for no reason.
+CALIBRATION_IS_LEGACY = os.environ.get("EX_CALIBRATION_LEGACY", "0") == "1"
+
+
 def read_calibration(data_dir: Path | str, chat_id: str) -> float:
-    """The stored ratio for this chat, or 1.0 when nothing has been measured yet."""
+    """The stored ratio for this chat, or 1.0 when nothing has been measured yet.
+
+    Returns 1.0 whenever exact counting is in use, because there is no longer a ratio to correct.
+    """
+    if not CALIBRATION_IS_LEGACY:
+        return 1.0
     if not chat_id:
         return CALIBRATION_FLOOR
     try:
