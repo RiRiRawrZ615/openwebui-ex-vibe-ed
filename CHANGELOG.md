@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Fork section. Entries below this marker describe upstream Open WebUI, not this build. -->
 
-## [1.2.0-rc5]
+## [1.2.0-rc5] - 2026-11-27
 
 Every item below came from a run, not from reading the code.
 
@@ -121,7 +121,7 @@ not inferred from reading the code.
   `EX_MODEL_ROOTS` as literal absolute paths, so nothing changes for the running instance here; the
   expansion matters for confs written in the placeholder form the package itself ships.
 
-## [1.2.0-rc3] - 2026-11-26## [1.2.0-rc3] - 2026-11-26
+## [1.2.0-rc3] - 2026-11-26
 
 Every item below came from a run, not from reading the code.
 
