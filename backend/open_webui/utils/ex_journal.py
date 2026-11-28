@@ -98,7 +98,7 @@ def journal_path(data_dir: Path | str, chat_id: str) -> Path:
 def _pointer(entry_id: int, kind: str, turn: int, summary: str, chars: int) -> str:
     return (
         f"{POINTER_PREFIX} turn {turn} {kind} id={entry_id} {chars} chars: {summary} | "
-        f"full text is stored, retrieve with ex_journal.read(entry={entry_id})"
+        f"full text is stored, retrieve with ex_journal__read(entry={entry_id})"
     )
 
 

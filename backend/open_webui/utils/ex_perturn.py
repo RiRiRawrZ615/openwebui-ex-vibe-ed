@@ -28,6 +28,7 @@ module only decides what is in the prompt.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -40,6 +41,13 @@ from open_webui.utils.ex_context_window import estimate_tokens, message_tokens
 log = logging.getLogger(__name__)
 
 MARKER = "[context transcript]"
+
+# A journal pointer is a reference, not content. The journal writes lines shaped like
+#   [journal turn 2 tool_output id=9 1470 chars: ... | retrieve with ex_journal.read(entry=9)]
+# and those were being copied verbatim into the durable transcript, so the export handed
+# the model something that reads as a tool result it is meant to follow. One bad pointer
+# became a rejected tool call, and a rejected call is what ends the turn.
+POINTER_PREFIX = "[journal"
 
 # The block must say HOW to get the part that was cut. A pointer with no reader is a dead end:
 # read_cache in the web_search tool accepts a local file path explicitly, so that is the reader
@@ -141,7 +149,17 @@ def render_export(messages: list[dict], message_chars: int = DEFAULT_MESSAGE_CHA
     """Verbatim, chronological, role-labelled. The shape of a chat saved as text."""
     lines = []
     for message in messages or []:
+        # Scratch reasoning never enters the durable transcript. The design feeds back the LAST
+        # turn's reasoning exactly once, from the live message list; writing every earlier block
+        # here is the opposite of that and hands the model its own abandoned drafts as the
+        # record of what happened.
+        if message.get("type") == "reasoning":
+            continue
         body = _text(message)
+        # A pointer is a reference, not content. Re-publishing it as text is what made the
+        # model chase a tool that is not loaded.
+        if body.lstrip().startswith(POINTER_PREFIX):
+            continue
         calls = message.get("tool_calls") or []
         if calls:
             made = []
@@ -183,9 +201,16 @@ def append_transcript(data_dir: Any, chat_id: str, messages: list[dict],
         calls = message.get("tool_calls") or []
         if not body and not calls:
             continue
-        ident = message.get("id") or ""
+        ident = str(message.get("id") or "")
         if not ident:
-            ident = "h" + str(abs(hash((message.get("role"), body[:200], len(body)))))
+            # A stable content digest. Python's hash() is salted per process, so the previous
+            # fallback id was a different value after every restart, nothing was recognised as
+            # already written, and the entire block was appended again each boot. That is how
+            # one turn became nine copies in a single file.
+            digest = hashlib.sha1((
+                "|".join([str(message.get("role")), body[:200], str(len(body))])
+            ).encode("utf-8")).hexdigest()[:24]
+            ident = "d" + digest
         if ident in seen:
             continue
         seen.add(ident)
